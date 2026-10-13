@@ -20,7 +20,7 @@ $(BUILD)/%.o: src/%.c $(wildcard include/transponder/*.h) src/internal.h | $(BUI
 $(BUILD)/libtransponder.a: $(SRC:src/%.c=$(BUILD)/%.o)
 	$(AR) rcs $@ $^
 
-$(BUILD)/run_tests: $(SRC) $(TEST_SRC) $(wildcard include/transponder/*.h) src/internal.h tests/test.h tests/conformance_vectors.h | $(BUILD)
+$(BUILD)/run_tests: $(SRC) $(TEST_SRC) $(wildcard include/transponder/*.h) src/internal.h tests/test.h tests/conformance_vectors.h tests/tempo_vectors.h | $(BUILD)
 	$(CC) $(CPPFLAGS) $(WARNINGS) $(CFLAGS) $(SRC) $(TEST_SRC) -o $@
 
 test: $(BUILD)/run_tests

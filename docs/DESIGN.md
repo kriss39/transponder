@@ -46,10 +46,11 @@ The device uses **pull mode**: it signs and the server broadcasts. That keeps th
 | MPP core | `WWW-Authenticate: Payment` parser (several challenges per response) | done, passes the mpp-tools vectors |
 | MPP core | JSON reader and writer (depth cap, UTF-8 checks, duplicate keys rejected) | done |
 | MPP core | credential builder: `{challenge, payload, source}` → JSON → base64url | done, passes the mpp-tools vectors |
-| Tempo | ABI calldata for `transfer` / `transferWithMemo` | |
-| Tempo | 0x76 transaction: fields, sender hash, signed envelope | |
-| Tempo | P-256 signature (130 bytes) and Keychain wrapper (`0x04`) | |
-| Tempo | address from P-256 public key | |
+| Tempo | ABI calldata for `transferWithMemo`, MPP attribution memo | done |
+| Tempo | 0x76 transaction: fields, sender hash, signed envelope | done, byte-identical to ox |
+| Tempo | P-256 signature (130 bytes, low-s) and Keychain wrapper (`0x04`) | done |
+| Tempo | address from P-256 public key | done |
+| Tempo | charge flow: challenge → transaction → signature → credential | next |
 | Signers | software P-256 (mbedTLS) for host tests and boards without a secure element | |
 | Signers | ATECC608A through cryptoauthlib | |
 | Platform | ESP-IDF: HTTP client, time, JSON-RPC calls | |
@@ -98,9 +99,14 @@ The owner's root key (a passkey, in practice) signs a `KeyAuthorization` with `k
 
 Credential JSON keys are written in mppx's order: `id, realm, method, intent, description, digest, expires, header, opaque, request`, then `payload`, then `source`.
 
+## Resolved
+
+- **Nonces.** The reference SDK uses expiring nonces for charges: `nonce_key = 2^256 - 1`, `nonce = 0`, `valid_before` at most 25 seconds ahead (and not past the challenge's `expires`), and `valid_after` a random past timestamp so otherwise identical transactions differ. The device needs the time (SNTP), not a nonce from the chain.
+- **Memo.** Every SDK payment uses `transferWithMemo`. If the request has `methodDetails.memo`, that memo is used, as the spec requires; otherwise the MPP attribution memo (see `trp_mpp_attribution_memo`). mppx's client always writes the attribution memo, which conflicts with a server-set memo; Transponder follows the spec, and an mppx server accepts either case.
+- **Signature details.** Tempo and ox require low-s P-256 signatures; the encoder normalizes `s`. Keychain V2 signs `keccak256(0x04 || sender_hash || owner)`.
+
 ## Open questions
 
-- **Nonces without an RPC round trip.** The device needs a nonce for its `nonce_key`. Options: read it with `eth_call` to the nonce precompile at `0x4E4F4E4345000000000000000000000000000000` before each payment, keep a local counter per lane, or use Tempo's expiring nonces if they fit (check the "Sequential and expiring nonces" section of the spec).
 - **Gas values.** `gas_limit` and the fee fields need either an RPC estimate or safe constants for a TIP-20 transfer. With a fee payer, check whether the server tolerates fixed values.
 - **Sessions.** Session vouchers are EIP-712 secp256k1 signatures. A clean design: the secure element's P-256 key opens the channel and names a short-lived secp256k1 `authorizedSigner` held in RAM. Later.
 

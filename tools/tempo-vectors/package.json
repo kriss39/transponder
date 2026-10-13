@@ -1,0 +1,9 @@
+{
+  "name": "transponder-tempo-vectors",
+  "private": true,
+  "type": "module",
+  "description": "Generates tests/tempo_vectors.h with ox, the library mppx uses to build Tempo transactions.",
+  "dependencies": {
+    "ox": "0.14.45"
+  }
+}
