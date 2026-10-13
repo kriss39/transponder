@@ -310,7 +310,7 @@ trp_err_t trp_tempo_charge(const trp_challenge *ch, const trp_charge_options *op
     if ((err = trp_tempo_sender_hash(&tx, rlp_buf, RLP_CAP, sender_hash)) != TRP_OK) return err;
     trp_tempo_keychain_digest(sender_hash, opt->owner, digest);
     if (opt->signer->sign_digest(opt->signer->ctx, digest, r, s) != TRP_OK) return TRP_ERR_CRYPTO;
-    if ((err = trp_p256_signature(r, s, opt->signer->public_key, p256)) != TRP_OK) return TRP_ERR_CRYPTO;
+    if ((err = trp_p256_signature(r, s, opt->signer->public_key, opt->signer->pre_hash, p256)) != TRP_OK) return TRP_ERR_CRYPTO;
     if ((err = trp_keychain_signature(opt->owner, p256, sizeof(p256), keychain, KEYCHAIN_CAP,
                                       &keychain_len)) != TRP_OK)
         return err;

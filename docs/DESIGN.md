@@ -52,6 +52,7 @@ The device uses **pull mode**: it signs and the server broadcasts. That keeps th
 | Tempo | address from P-256 public key | done |
 | Tempo | charge flow: challenge → transaction → signature → credential (`trp_tempo_charge`) | done, credential identical to the reference |
 | Signers | software P-256 (mbedTLS PSA API, `ports/mbedtls`) for host tests and boards without a secure element | done, signatures identical to ox |
+| Signers | Apple Secure Enclave through CryptoKit (`ports/apple`, pre-hashed P-256) | done, paid on Moderato |
 | Signers | ATECC608A through cryptoauthlib | |
 | Platform | host demo with libcurl (`examples/host-pay`) | done, paid on Moderato |
 | Platform | ESP-IDF: HTTP client, time, JSON-RPC calls | |

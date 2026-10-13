@@ -194,7 +194,7 @@ static int u256_is_zero(const uint8_t a[32])
 }
 
 trp_err_t trp_p256_signature(const uint8_t r[32], const uint8_t s[32],
-                             const uint8_t public_key[TRP_P256_PUBKEY_LEN],
+                             const uint8_t public_key[TRP_P256_PUBKEY_LEN], int pre_hash,
                              uint8_t out[TRP_P256_SIGNATURE_LEN])
 {
     if (u256_is_zero(r) || u256_is_zero(s) || u256_cmp(r, P256_N) >= 0 || u256_cmp(s, P256_N) >= 0)
@@ -204,7 +204,7 @@ trp_err_t trp_p256_signature(const uint8_t r[32], const uint8_t s[32],
     if (u256_cmp(s, P256_HALF_N) > 0) u256_sub(P256_N, s, out + 33);
     else memcpy(out + 33, s, 32);
     memcpy(out + 65, public_key, TRP_P256_PUBKEY_LEN);
-    out[129] = 0; /* pre_hash */
+    out[129] = pre_hash ? 1 : 0;
     return TRP_OK;
 }
 

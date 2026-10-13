@@ -10,7 +10,7 @@ SRC = $(wildcard src/*.c)
 TEST_SRC = $(filter-out tests/port_%.c,$(wildcard tests/*.c))
 BUILD = build
 
-.PHONY: all test asan test-mbedtls pay clean
+.PHONY: all test asan test-mbedtls pay pay-enclave enclave-key clean
 
 all: $(BUILD)/libtransponder.a
 
@@ -46,6 +46,23 @@ test-mbedtls: | $(BUILD)
 pay: | $(BUILD)
 	$(CC) $(CPPFLAGS) $(MBEDTLS_CFLAGS) $(WARNINGS) -Wno-conversion $(CFLAGS) $(SRC) \
 		ports/mbedtls/trp_mbedtls_signer.c examples/host-pay/pay.c $(MBEDTLS_LIBS) -lcurl -o $(BUILD)/pay
+
+# Apple Secure Enclave signer (Apple silicon Macs). swiftc links the C and Swift halves.
+ENCLAVE_SWIFT = ports/apple/trp_secure_enclave.swift
+ENCLAVE_C = ports/apple/trp_secure_enclave.c
+
+enclave-key: | $(BUILD)
+	mkdir -p $(BUILD)/enclave-key.o.d
+	cd $(BUILD)/enclave-key.o.d && $(CC) -I../../include $(WARNINGS) $(CFLAGS) -c \
+		$(addprefix ../../,$(SRC) $(ENCLAVE_C) examples/host-pay/enclave_key.c)
+	swiftc -O -parse-as-library $(ENCLAVE_SWIFT) $(BUILD)/enclave-key.o.d/*.o -o $(BUILD)/enclave-key
+
+pay-enclave: | $(BUILD)
+	mkdir -p $(BUILD)/pay-enclave.o.d
+	cd $(BUILD)/pay-enclave.o.d && $(CC) -I../../include $(MBEDTLS_CFLAGS) $(WARNINGS) -Wno-conversion \
+		$(CFLAGS) -DTRP_WITH_ENCLAVE -c \
+		$(addprefix ../../,$(SRC) $(ENCLAVE_C) ports/mbedtls/trp_mbedtls_signer.c examples/host-pay/pay.c)
+	swiftc -O -parse-as-library $(ENCLAVE_SWIFT) $(BUILD)/pay-enclave.o.d/*.o $(MBEDTLS_LIBS) -lcurl -o $(BUILD)/pay
 
 $(BUILD):
 	mkdir -p $(BUILD)

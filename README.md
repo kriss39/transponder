@@ -4,7 +4,7 @@
 
 Transponder lets a device pay for an API over the Machine Payments Protocol, the HTTP 402 standard from Tempo and Stripe. It answers a `402 Payment Required` challenge with a signed Tempo transaction, and the signing key never leaves the device's secure element.
 
-> **Status: early.** Transponder paid its first MPP service on Tempo testnet (Moderato) on 2026-10-14: a local mppx server charged 0.01 AlphaUSD, the payment settled in [`0x3c01ac56…83ab10`](https://explore.testnet.tempo.xyz/tx/0x3c01ac563dc3cd18a7052de8635103777e41487a033072c68232a8557583ab10), signed by an access key with a 5 AlphaUSD limit. It ran from a computer with a software key; the secure-element version on an ESP32 is next.
+> **Status: early.** Transponder paid its first MPP service on Tempo testnet (Moderato) on 2026-10-14: a local mppx server charged 0.01 AlphaUSD, the payment settled in [`0x3c01ac56…83ab10`](https://explore.testnet.tempo.xyz/tx/0x3c01ac563dc3cd18a7052de8635103777e41487a033072c68232a8557583ab10), signed by an access key with a 5 AlphaUSD limit. The same day it paid again with a key held in the Secure Enclave of an M2 Mac ([`0xb0b71ac4…8f79f6`](https://explore.testnet.tempo.xyz/tx/0xb0b71ac46e7901b3917fa68eaaad457242faee905199d3807cbbdb9a718f79f6)): the private key never left the chip, which is the model for the ESP32 + ATECC608A version that comes next.
 
 ## Why
 
@@ -18,6 +18,7 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 - [x] MPP core: challenge parsing, `request` decoding, credential encoding, checked against the [tempoxyz/mpp-tools](https://github.com/tempoxyz/mpp-tools) conformance vectors
 - [x] Tempo `charge`: 0x76 transaction, P-256 and Keychain signatures, the full challenge → credential flow, checked byte for byte against ox (the library mppx uses)
 - [x] Software P-256 signer on the PSA Crypto API (mbedTLS 3.x and 4.x)
+- [x] Apple Secure Enclave signer (`ports/apple`): a hardware-held key on any Apple-silicon Mac
 - [ ] ATECC608A signer
 - [x] A first payment on Tempo testnet from a computer, through a stock mppx server
 - [ ] ESP-IDF example: an ESP32-WROOM-32SE (ATECC608A built in) pays a live MPP endpoint on Tempo testnet
@@ -50,6 +51,16 @@ cd tools/testnet && npm install
 node setup.mjs     # owner account from the faucet, device key authorized with a 5 AlphaUSD limit
 node server.mjs &  # a local MPP service: 0.01 AlphaUSD per reading
 cd ../.. && make pay
+set -a; . .testnet/device.env; set +a
+./build/pay http://127.0.0.1:8402/reading
+```
+
+On an Apple-silicon Mac, sign with a key in the Secure Enclave instead:
+
+```sh
+make enclave-key pay-enclave
+./build/enclave-key create .testnet/enclave.key
+cd tools/testnet && node setup.mjs && cd ../..   # authorizes the enclave key too
 set -a; . .testnet/device.env; set +a
 ./build/pay http://127.0.0.1:8402/reading
 ```

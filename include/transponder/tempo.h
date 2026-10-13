@@ -77,11 +77,13 @@ void trp_tempo_keychain_digest(const uint8_t sender_hash[32], const uint8_t owne
 /*
  * The 130-byte P-256 signature: 0x01 || r || s || pub_x || pub_y || pre_hash.
  * `s` is normalized to the low half of the curve order, which Tempo
- * requires; secure elements do not always produce it. pre_hash is 0: the
- * signer signed the 32-byte digest directly.
+ * requires; secure elements do not always produce it. Set `pre_hash` when
+ * the signer signed SHA-256(digest) rather than the digest itself (Web
+ * Crypto, Apple CryptoKit); Tempo then hashes the digest the same way
+ * before verifying.
  */
 trp_err_t trp_p256_signature(const uint8_t r[32], const uint8_t s[32],
-                             const uint8_t public_key[TRP_P256_PUBKEY_LEN],
+                             const uint8_t public_key[TRP_P256_PUBKEY_LEN], int pre_hash,
                              uint8_t out[TRP_P256_SIGNATURE_LEN]);
 
 /* Keychain V2 wrapper: 0x04 || owner || inner signature. */

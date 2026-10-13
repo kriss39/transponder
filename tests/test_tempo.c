@@ -80,7 +80,7 @@ static void test_vectors(void)
 
         unhex(v->sig_r, r, sizeof(r));
         unhex(v->sig_s, s, sizeof(s));
-        CHECK(trp_p256_signature(r, s, pub, p256) == TRP_OK);
+        CHECK(trp_p256_signature(r, s, pub, 0, p256) == TRP_OK);
         CHECK(trp_keychain_signature(owner, p256, sizeof(p256), keychain, sizeof(keychain),
                                      &keychain_len) == TRP_OK);
         CHECK(keychain_len == 151);
@@ -115,14 +115,18 @@ static void test_signature_rules(void)
         borrow = d < 0;
         high_s[i] = (uint8_t)(d + (borrow ? 256 : 0));
     }
-    CHECK(trp_p256_signature(r, s, pub, low_sig) == TRP_OK);
-    CHECK(trp_p256_signature(r, high_s, pub, high_sig) == TRP_OK);
+    CHECK(trp_p256_signature(r, s, pub, 0, low_sig) == TRP_OK);
+    CHECK(trp_p256_signature(r, high_s, pub, 0, high_sig) == TRP_OK);
     CHECK(memcmp(low_sig, high_sig, sizeof(low_sig)) == 0);
     CHECK(low_sig[0] == 0x01 && low_sig[129] == 0x00);
 
-    CHECK(trp_p256_signature(zero, s, pub, low_sig) == TRP_ERR_INVALID);
-    CHECK(trp_p256_signature(r, zero, pub, low_sig) == TRP_ERR_INVALID);
-    CHECK(trp_p256_signature(r, N, pub, low_sig) == TRP_ERR_INVALID);
+    /* A signer that hashes before signing (Web Crypto, CryptoKit) sets the flag byte. */
+    CHECK(trp_p256_signature(r, s, pub, 1, high_sig) == TRP_OK);
+    CHECK(high_sig[129] == 0x01 && memcmp(low_sig, high_sig, 129) == 0);
+
+    CHECK(trp_p256_signature(zero, s, pub, 0, low_sig) == TRP_ERR_INVALID);
+    CHECK(trp_p256_signature(r, zero, pub, 0, low_sig) == TRP_ERR_INVALID);
+    CHECK(trp_p256_signature(r, N, pub, 0, low_sig) == TRP_ERR_INVALID);
 }
 
 static void test_helpers(void)

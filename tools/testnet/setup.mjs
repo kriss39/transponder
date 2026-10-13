@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { encodeFunctionData, formatUnits, parseAbi, parseUnits } from 'viem'
-import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts'
+import { generatePrivateKey, privateKeyToAccount, publicKeyToAddress } from 'viem/accounts'
 import { prepareTransactionRequest } from 'viem/actions'
 import { tempoModerato } from 'viem/chains'
 import { Account, createClient, P256 } from 'viem/tempo'
@@ -93,6 +93,38 @@ if (!active) {
 const remaining = await client.accessKey.getRemainingLimit({ accessKey: device, token: ALPHA_USD })
 console.log('device budget left', formatUnits(remaining.remaining, 6), 'AlphaUSD')
 
+// 2b. A Secure Enclave key (made by `./build/enclave-key create .testnet/enclave.key`)
+// gets the same grant. Only its public key is known here; the private key
+// never leaves the Mac's enclave.
+const enclavePub = join(dir, 'enclave.pub')
+let enclaveKeyPath
+if (existsSync(enclavePub)) {
+  const xy = readFileSync(enclavePub, 'utf8').trim().replace(/^0x/, '')
+  const enclaveKey = { accessKeyAddress: publicKeyToAddress(`0x04${xy}`), keyType: 'p256' }
+  console.log('enclave key', enclaveKey.accessKeyAddress)
+  const meta = await client.accessKey.getMetadata({ accessKey: enclaveKey }).catch(() => undefined)
+  const live = meta && !meta.isRevoked && meta.expiry > BigInt(Math.floor(Date.now() / 1000))
+  if (!live) {
+    console.log('authorizing the enclave key...')
+    const { receipt } = await client.accessKey.authorizeSync({
+      accessKey: enclaveKey,
+      expiry: Math.floor(Date.now() / 1000) + 7 * 24 * 3600,
+      limits: [{ token: ALPHA_USD, limit: parseUnits('5', 6), period: 0 }],
+      scopes: [
+        {
+          address: ALPHA_USD,
+          selector: 'transferWithMemo(address,uint256,bytes32)',
+          recipients: [merchant],
+        },
+      ],
+    })
+    console.log('authorized in', receipt.transactionHash)
+  }
+  const left = await client.accessKey.getRemainingLimit({ accessKey: enclaveKey, token: ALPHA_USD })
+  console.log('enclave budget left', formatUnits(left.remaining, 6), 'AlphaUSD')
+  enclaveKeyPath = join(dir, 'enclave.key')
+}
+
 // 3. Gas and fee values for one payment, estimated as the device would send it.
 const deviceClient = createClient({ account: device, chain: tempoModerato, feeToken: ALPHA_USD })
 const prepared = await prepareTransactionRequest(deviceClient, {
@@ -125,6 +157,7 @@ writeFileSync(
     `TRP_GAS=${gas}`,
     `TRP_MAX_FEE=${prepared.maxFeePerGas * 2n}`,
     `TRP_PRIORITY_FEE=${prepared.maxPriorityFeePerGas ?? 0n}`,
+    ...(enclaveKeyPath ? [`TRP_ENCLAVE_KEY="${enclaveKeyPath}"`] : []),
     '',
   ].join('\n'),
   { mode: 0o600 },

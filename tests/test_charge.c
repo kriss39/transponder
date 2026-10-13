@@ -43,6 +43,7 @@ static void setup(trp_signer *signer, fake_key *key, uint8_t owner[20], uint8_t 
 {
     memset(key, 0, sizeof(*key));
     memset(opt, 0, sizeof(*opt));
+    memset(signer, 0, sizeof(*signer));
     signer->sign_digest = fake_sign;
     signer->ctx = key;
     unhex(TV_PUBLIC_KEY, signer->public_key, sizeof(signer->public_key));

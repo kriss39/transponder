@@ -14,6 +14,8 @@
  *   TRP_CHAIN_ID      default chain when the challenge names none
  *   TRP_GAS, TRP_MAX_FEE, TRP_PRIORITY_FEE   gas limit and fee caps
  *   TRP_FEE_TOKEN     token that pays the network fee
+ *   TRP_ENCLAVE_KEY   optional: a Secure Enclave key blob (build with `make pay-enclave`);
+ *                     when set, it signs instead of TRP_DEVICE_KEY
  */
 
 #include <curl/curl.h>
@@ -27,6 +29,9 @@
 #include "transponder/charge.h"
 #include "transponder/hex.h"
 #include "../../ports/mbedtls/trp_mbedtls_signer.h"
+#ifdef TRP_WITH_ENCLAVE
+#include "../../ports/apple/trp_secure_enclave.h"
+#endif
 
 typedef struct {
     char challenge[8192]; /* WWW-Authenticate values, comma-joined */
@@ -127,7 +132,7 @@ int main(int argc, char **argv)
     static char credential[4096], header_line[4200];
     uint8_t owner[20], device_key[32], fee_token[20];
     trp_signer signer;
-    trp_mbedtls_key key;
+    trp_mbedtls_key key = {0};
     trp_charge_options opt;
     trp_challenge ch;
     trp_err_t err;
@@ -139,7 +144,6 @@ int main(int argc, char **argv)
         return 2;
     }
     hex_env("TRP_OWNER", owner, sizeof(owner));
-    hex_env("TRP_DEVICE_KEY", device_key, sizeof(device_key));
     hex_env("TRP_FEE_TOKEN", fee_token, sizeof(fee_token));
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
@@ -159,9 +163,31 @@ int main(int argc, char **argv)
     printf("challenge %s from %s: %s\n", ch.id.ptr, ch.realm.ptr,
            ch.description.ptr ? ch.description.ptr : "");
 
-    if (trp_mbedtls_signer_import(&signer, &key, device_key) != TRP_OK) {
-        fprintf(stderr, "could not load the device key\n");
-        return 1;
+#ifdef TRP_WITH_ENCLAVE
+    if (getenv("TRP_ENCLAVE_KEY") && *getenv("TRP_ENCLAVE_KEY")) {
+        static trp_enclave_key enclave;
+        FILE *f = fopen(getenv("TRP_ENCLAVE_KEY"), "rb");
+        if (!f) {
+            fprintf(stderr, "cannot read TRP_ENCLAVE_KEY\n");
+            return 1;
+        }
+        enclave.len = fread(enclave.blob, 1, sizeof(enclave.blob), f);
+        fclose(f);
+        if (trp_enclave_signer_init(&signer, &enclave) != TRP_OK) {
+            fprintf(stderr, "could not load the Secure Enclave key\n");
+            return 1;
+        }
+        printf("signing with the Secure Enclave\n");
+        key.key = 0;
+    } else
+#endif
+    {
+        hex_env("TRP_DEVICE_KEY", device_key, sizeof(device_key));
+        if (trp_mbedtls_signer_import(&signer, &key, device_key) != TRP_OK) {
+            fprintf(stderr, "could not load the device key\n");
+            return 1;
+        }
+        printf("signing with a software key (mbedTLS)\n");
     }
     memset(&opt, 0, sizeof(opt));
     now = (uint64_t)time(NULL);
@@ -178,7 +204,7 @@ int main(int argc, char **argv)
     opt.client_id.len = 11;
 
     err = trp_tempo_charge(&ch, &opt, credential, sizeof(credential), work, sizeof(work));
-    trp_mbedtls_signer_free(&key);
+    if (key.key) trp_mbedtls_signer_free(&key);
     if (err != TRP_OK) {
         fprintf(stderr, "could not build the payment (%d)\n", (int)err);
         return 1;

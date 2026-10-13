@@ -48,8 +48,8 @@ static void test_matches_ox(void)
         unhex(v->sig_r, want_r, 32);
         unhex(v->sig_s, want_s, 32);
         CHECK(signer.sign_digest(signer.ctx, digest, r, s) == TRP_OK);
-        CHECK(trp_p256_signature(r, s, signer.public_key, got) == TRP_OK);
-        CHECK(trp_p256_signature(want_r, want_s, want_pub, want) == TRP_OK);
+        CHECK(trp_p256_signature(r, s, signer.public_key, 0, got) == TRP_OK);
+        CHECK(trp_p256_signature(want_r, want_s, want_pub, 0, want) == TRP_OK);
         CHECK(memcmp(got, want, sizeof(got)) == 0);
     }
 

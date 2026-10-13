@@ -50,6 +50,7 @@ static trp_err_t finish(trp_signer *signer, trp_mbedtls_key *key)
     memcpy(signer->public_key, pub + 1, 64);
     signer->sign_digest = sign_digest;
     signer->ctx = key;
+    signer->pre_hash = 0; /* PSA signs the digest as given */
     return TRP_OK;
 }
 

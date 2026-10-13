@@ -11,14 +11,14 @@ extern "C" {
 
 /*
  * Something that holds a P-256 key and signs 32-byte digests with it: a
- * secure element on a device, or a software key on a computer. The digest
- * is signed as is (no extra hashing). `s` may be high or low; the encoder
- * normalizes it.
+ * secure element on a device, the Secure Enclave of a Mac, or a software
+ * key. `s` may be high or low; the encoder normalizes it.
  */
 typedef struct {
     trp_err_t (*sign_digest)(void *ctx, const uint8_t digest[32], uint8_t r[32], uint8_t s[32]);
     void *ctx;
     uint8_t public_key[TRP_P256_PUBKEY_LEN]; /* x || y */
+    int pre_hash; /* non-zero if sign_digest signs SHA-256(digest), as CryptoKit does */
 } trp_signer;
 
 /* What the caller supplies besides the challenge. */
