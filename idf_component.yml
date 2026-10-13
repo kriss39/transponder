@@ -1,0 +1,6 @@
+version: "0.0.1"
+description: "MPP (Machine Payments Protocol) client for microcontrollers, with Tempo keys held in a secure element"
+url: "https://github.com/kriss39/transponder"
+license: "MIT"
+dependencies:
+  idf: ">=5.0"

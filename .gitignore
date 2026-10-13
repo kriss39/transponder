@@ -1,0 +1,10 @@
+build/
+*.o
+*.a
+.DS_Store
+.env
+*.pem
+*.key
+sdkconfig
+sdkconfig.old
+managed_components/
