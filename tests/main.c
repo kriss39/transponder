@@ -19,6 +19,7 @@ int main(void)
     run("json", test_json);
     run("challenge", test_challenge);
     run("tempo", test_tempo);
+    run("charge", test_charge);
 
     printf("\n%d checks, %d failed\n", trp_test_checks, trp_test_failures);
     return trp_test_failures == 0 ? 0 : 1;

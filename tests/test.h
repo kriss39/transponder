@@ -40,5 +40,6 @@ void test_base64url(void);
 void test_json(void);
 void test_challenge(void);
 void test_tempo(void);
+void test_charge(void);
 
 #endif

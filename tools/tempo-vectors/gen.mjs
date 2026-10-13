@@ -133,6 +133,134 @@ for (const c of cases) {
 
 out.push('};')
 out.push('')
+
+// ---- Full charge flow: challenge in, credential header out ----------------
+//
+// Mirrors what mppx 0.13.4's tempo client does in pull mode
+// (src/tempo/client/Charge.ts), with gas and fees fixed instead of estimated.
+
+const b64url = (s) => Buffer.from(s).toString('base64url')
+const sortKeys = (v) =>
+  v && typeof v === 'object' && !Array.isArray(v)
+    ? Object.fromEntries(Object.keys(v).sort().map((k) => [k, sortKeys(v[k])]))
+    : v
+const jcs = (v) => JSON.stringify(sortKeys(v))
+
+const now = Math.floor(Date.parse('2026-10-14T10:00:00Z') / 1000)
+const flows = [
+  {
+    name: 'sponsored_attribution',
+    challenge: {
+      id: 'ch_charge_1',
+      realm: 'api.example.com',
+      method: 'tempo',
+      intent: 'charge',
+      expires: '2026-10-14T10:00:30Z',
+      request: { amount: '10000', currency: token, recipient, methodDetails: { chainId: 42431, feePayer: true } },
+    },
+    clientId: 'transponder',
+    validAfter: 1700000123,
+    gas: 125000n,
+    maxFeePerGas: 30000000000n,
+    maxPriorityFeePerGas: 0n,
+    feeToken: undefined,
+  },
+  {
+    name: 'self_paid_server_memo',
+    challenge: {
+      id: 'ch_charge_2',
+      realm: 'mpp.dev',
+      method: 'tempo',
+      intent: 'charge',
+      description: 'Sensor reading',
+      expires: '2026-10-14T10:00:10Z',
+      request: {
+        amount: '1',
+        currency: token,
+        recipient,
+        methodDetails: {
+          chainId: 4217,
+          memo: '0x00000000000000000000000000000000000000000000000000000000000004d2',
+          supportedModes: ['pull'],
+        },
+      },
+    },
+    clientId: undefined,
+    validAfter: undefined,
+    gas: 90000n,
+    maxFeePerGas: 25000000000n,
+    maxPriorityFeePerGas: 1n,
+    feeToken: token,
+  },
+]
+
+out.push('typedef struct {')
+out.push('    const char *name, *wire, *client_id;')
+out.push('    uint64_t now, valid_after, gas, max_fee_per_gas, max_priority_fee_per_gas;')
+out.push('    int has_fee_token;')
+out.push('    const char *digest, *sig_r, *sig_s, *credential;')
+out.push('} charge_vector;')
+out.push('')
+out.push('static const charge_vector CHARGE_VECTORS[] = {')
+
+for (const f of flows) {
+  const ch = f.challenge
+  const requestWire = b64url(jcs(ch.request))
+  const wire =
+    `Payment id="${ch.id}", realm="${ch.realm}", method="${ch.method}", intent="${ch.intent}", ` +
+    `request="${requestWire}"` +
+    (ch.description ? `, description="${ch.description}"` : '') +
+    `, expires="${ch.expires}"`
+
+  const details = ch.request.methodDetails
+  const memo = details.memo ?? attributionMemo({ serverId: ch.realm, clientId: f.clientId, challengeId: ch.id })
+  const validBefore = Math.min(now + 25, Math.floor(Date.parse(ch.expires) / 1000))
+  const data = AbiFunction.encodeData(transferWithMemo, [ch.request.recipient, BigInt(ch.request.amount), memo])
+  const envelope = TxEnvelopeTempo.from({
+    chainId: details.chainId,
+    calls: [{ to: ch.request.currency, data }],
+    gas: f.gas,
+    maxFeePerGas: f.maxFeePerGas,
+    maxPriorityFeePerGas: f.maxPriorityFeePerGas,
+    nonceKey: maxUint256,
+    nonce: 0n,
+    validBefore,
+    ...(f.validAfter !== undefined ? { validAfter: f.validAfter } : {}),
+    ...(details.feePayer ? { feePayerSignature: null } : f.feeToken ? { feeToken: f.feeToken } : {}),
+  })
+  const digest = TxEnvelopeTempo.getSignPayload(envelope, { from: owner })
+  const signature = P256.sign({ payload: digest, privateKey })
+  const keychain = SignatureEnvelope.from({
+    type: 'keychain',
+    version: 'v2',
+    userAddress: owner,
+    inner: SignatureEnvelope.from({ signature, publicKey, prehash: false }),
+  })
+  const serialized = TxEnvelopeTempo.serialize(envelope, { signature: keychain })
+  TxEnvelopeTempo.deserialize(serialized)
+
+  // Credential.serialize in mppx: echoed parameters, then opaque, then request.
+  const echoed = { id: ch.id, realm: ch.realm, method: ch.method, intent: ch.intent }
+  if (ch.description) echoed.description = ch.description
+  if (ch.expires) echoed.expires = ch.expires
+  echoed.request = requestWire
+  const credential = {
+    challenge: echoed,
+    payload: { signature: serialized, type: 'transaction' },
+    source: `did:pkh:eip155:${details.chainId}:${Address.checksum(owner)}`,
+  }
+  const header = `Payment ${b64url(JSON.stringify(credential))}`
+
+  const cstr = (s) => (s === undefined ? 'NULL' : JSON.stringify(s))
+  out.push(`    {"${f.name}", ${cstr(wire)}, ${cstr(f.clientId)},`)
+  out.push(`     ${now}u, ${f.validAfter ?? 0}u, ${f.gas}u, ${f.maxFeePerGas}u, ${f.maxPriorityFeePerGas}u, ${f.feeToken ? 1 : 0},`)
+  out.push(`     ${hex(digest)},`)
+  out.push(`     ${hex(Hex.fromNumber(signature.r, { size: 32 }))}, ${hex(Hex.fromNumber(signature.s, { size: 32 }))},`)
+  out.push(`     ${cstr(header)}},`)
+}
+
+out.push('};')
+out.push('')
 out.push('#endif')
 out.push('')
 process.stdout.write(out.join('\n'))
