@@ -1,0 +1,18 @@
+# Transponder demo: a paid "sensor reading" on Tempo testnet (Moderato).
+name = "transponder-demo"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+# Testnet-only address that receives the payments. Not a real account.
+MERCHANT = "0xaA79b895A1C0fc06623570B6e44649A7Eb01F9dF"
+# AlphaUSD on Moderato (the faucet hands it out).
+TOKEN = "0x20c0000000000000000000000000000000000001"
+PRICE = "0.01"
+
+# MPP_SECRET_KEY is a secret: `npx wrangler secret put MPP_SECRET_KEY` (32+ random bytes, hex).
+# For `wrangler dev`, put it in .dev.vars (git-ignored).
+
+[alias]
+"@modelcontextprotocol/sdk/types.js" = "./src/mcp-stub.js"

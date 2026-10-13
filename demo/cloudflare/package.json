@@ -1,0 +1,16 @@
+{
+  "name": "transponder-demo",
+  "private": true,
+  "type": "module",
+  "description": "A public MPP service on Tempo testnet that Transponder devices can pay. Cloudflare Worker built with mppx.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  },
+  "dependencies": {
+    "mppx": "0.13.4"
+  },
+  "devDependencies": {
+    "wrangler": "4.140.0"
+  }
+}
