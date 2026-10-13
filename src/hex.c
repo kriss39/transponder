@@ -1,8 +1,10 @@
 #include "transponder/hex.h"
 
+#include "internal.h"
+
 static const char HEX_DIGITS[] = "0123456789abcdef";
 
-static int nibble(char c)
+int trp__hex_nibble(char c)
 {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -42,8 +44,8 @@ trp_err_t trp_hex_decode(const char *hex, size_t len, uint8_t *out,
     n = len / 2;
     if (n > out_cap) return TRP_ERR_BUFFER;
     for (i = 0; i < n; i++) {
-        int hi = nibble(hex[2 * i]);
-        int lo = nibble(hex[2 * i + 1]);
+        int hi = trp__hex_nibble(hex[2 * i]);
+        int lo = trp__hex_nibble(hex[2 * i + 1]);
         if (hi < 0 || lo < 0) return TRP_ERR_INVALID;
         out[i] = (uint8_t)((hi << 4) | lo);
     }

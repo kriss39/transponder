@@ -36,5 +36,8 @@ extern int trp_test_checks;
 void test_hex(void);
 void test_keccak(void);
 void test_rlp(void);
+void test_base64url(void);
+void test_json(void);
+void test_challenge(void);
 
 #endif

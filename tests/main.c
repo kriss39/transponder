@@ -15,6 +15,9 @@ int main(void)
     run("hex", test_hex);
     run("keccak", test_keccak);
     run("rlp", test_rlp);
+    run("base64url", test_base64url);
+    run("json", test_json);
+    run("challenge", test_challenge);
 
     printf("\n%d checks, %d failed\n", trp_test_checks, trp_test_failures);
     return trp_test_failures == 0 ? 0 : 1;

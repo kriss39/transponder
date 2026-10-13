@@ -42,10 +42,10 @@ The device uses **pull mode**: it signs and the server broadcasts. That keeps th
 | Encoding | hex | done |
 | Hashing | Keccak-256 | done |
 | Encoding | RLP writer | done |
-| Encoding | base64url | next |
-| MPP core | `WWW-Authenticate: Payment` parser (several challenges per response) | next |
-| MPP core | minimal JSON reader for `request` (amount, currency, recipient, methodDetails) | next |
-| MPP core | credential builder: `{challenge, payload, source}` → JSON → base64url | next |
+| Encoding | base64url | done |
+| MPP core | `WWW-Authenticate: Payment` parser (several challenges per response) | done, passes the mpp-tools vectors |
+| MPP core | JSON reader and writer (depth cap, UTF-8 checks, duplicate keys rejected) | done |
+| MPP core | credential builder: `{challenge, payload, source}` → JSON → base64url | done, passes the mpp-tools vectors |
 | Tempo | ABI calldata for `transfer` / `transferWithMemo` | |
 | Tempo | 0x76 transaction: fields, sender hash, signed envelope | |
 | Tempo | P-256 signature (130 bytes) and Keychain wrapper (`0x04`) | |
@@ -92,12 +92,17 @@ From the Tempo Transactions specification. Fields, in RLP order:
 
 The owner's root key (a passkey, in practice) signs a `KeyAuthorization` with `key_type = 1` (P-256), `key_id` = the device address, an `expiry`, and `limits` (token, amount, period). This happens once, from a browser, not on the device. Pitstop's Guard page already authorizes P-256 access keys this way, so it could provision devices too.
 
+## Conformance
+
+`tests/conformance_vectors.h` is generated from the cross-SDK vectors in tempoxyz/mpp-tools by `tools/gen_conformance.py`. Transponder follows the TypeScript reference SDK (mppx), so scenarios limited to other adapters are skipped. One deliberate difference from the Python SDK: an unterminated quoted-string is an error (as in mppx), not ignored.
+
+Credential JSON keys are written in mppx's order: `id, realm, method, intent, description, digest, expires, header, opaque, request`, then `payload`, then `source`.
+
 ## Open questions
 
 - **Nonces without an RPC round trip.** The device needs a nonce for its `nonce_key`. Options: read it with `eth_call` to the nonce precompile at `0x4E4F4E4345000000000000000000000000000000` before each payment, keep a local counter per lane, or use Tempo's expiring nonces if they fit (check the "Sequential and expiring nonces" section of the spec).
 - **Gas values.** `gas_limit` and the fee fields need either an RPC estimate or safe constants for a TIP-20 transfer. With a fee payer, check whether the server tolerates fixed values.
 - **Sessions.** Session vouchers are EIP-712 secp256k1 signatures. A clean design: the secure element's P-256 key opens the channel and names a short-lived secp256k1 `authorizedSigner` held in RAM. Later.
-- **Request JSON.** Decide between a vendored small JSON parser and a purpose-built scanner for the few fields the `request` object carries.
 
 ## References
 
