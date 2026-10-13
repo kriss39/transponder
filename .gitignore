@@ -10,3 +10,7 @@ sdkconfig.old
 managed_components/
 node_modules/
 .testnet/
+
+# Local working notes, kept out of the public repo
+CLAUDE.md
+docs/PROGRESS.md
