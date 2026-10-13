@@ -19,8 +19,8 @@ static size_t unhex(const char *hex, uint8_t *out, size_t cap)
 }
 
 static char scratch[4096];
-static uint8_t work[4096];
-static char header[4096];
+static uint8_t work[8192];
+static char header[8192];
 
 /* The test key behind the vectors: 0x11 repeated 32 times. */
 static const uint8_t TEST_PRIVATE_KEY[32] = {
@@ -33,6 +33,7 @@ static void test_matches_ox(void)
     trp_signer signer;
     trp_mbedtls_key key;
     uint8_t want_pub[64], owner[20], token[20];
+    trp_spend_policy policy;
     size_t i;
 
     CHECK(trp_mbedtls_signer_import(&signer, &key, TEST_PRIVATE_KEY) == TRP_OK);
@@ -56,12 +57,15 @@ static void test_matches_ox(void)
     /* The whole charge with the real signer gives the reference credential. */
     unhex(TV_OWNER, owner, 20);
     unhex(TV_TOKEN, token, 20);
+    memset(&policy, 0, sizeof(policy));
+    trp_u256_from_decimal("1000000", 7, policy.max_amount);
     for (i = 0; i < sizeof(CHARGE_VECTORS) / sizeof(CHARGE_VECTORS[0]); i++) {
         const charge_vector *v = &CHARGE_VECTORS[i];
         trp_charge_options opt;
         trp_challenge ch;
 
         memset(&opt, 0, sizeof(opt));
+        opt.policy = &policy;
         opt.owner = owner;
         opt.signer = &signer;
         opt.now = v->now;
@@ -75,7 +79,7 @@ static void test_matches_ox(void)
             opt.client_id.len = strlen(v->client_id);
         }
         CHECK(trp_challenge_parse(v->wire, strlen(v->wire), &ch, scratch, sizeof(scratch)) == TRP_OK);
-        CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+        CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work), NULL) == TRP_OK);
         CHECK(strcmp(header, v->credential) == 0);
     }
     trp_mbedtls_signer_free(&key);

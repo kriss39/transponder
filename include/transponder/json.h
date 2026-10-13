@@ -17,7 +17,10 @@ extern "C" {
  * rather than silently picking one.
  */
 
-#define TRP_JSON_MAX_DEPTH 32
+/* MPP objects nest 4 deep at most; a low cap bounds stack use on hostile input. */
+#ifndef TRP_JSON_MAX_DEPTH
+#define TRP_JSON_MAX_DEPTH 8
+#endif
 
 typedef enum {
     TRP_JSON_NULL,

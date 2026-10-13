@@ -11,7 +11,8 @@
  *
  *   TRP_OWNER         account the device key pays for (0x...)
  *   TRP_DEVICE_KEY    the device's P-256 private key (testnet only)
- *   TRP_CHAIN_ID      default chain when the challenge names none
+ *   TRP_CHAIN_ID      the only chain this device will pay on
+ *   TRP_MAX_AMOUNT    most it pays per request, in base units (default 100000 = 0.10)
  *   TRP_GAS, TRP_MAX_FEE, TRP_PRIORITY_FEE   gas limit and fee caps
  *   TRP_FEE_TOKEN     token that pays the network fee
  *   TRP_ENCLAVE_KEY   optional: a Secure Enclave key blob (build with `make pay-enclave`);
@@ -28,6 +29,7 @@
 #include "transponder/challenge.h"
 #include "transponder/charge.h"
 #include "transponder/hex.h"
+#include "transponder/receipt.h"
 #include "../../ports/mbedtls/trp_mbedtls_signer.h"
 #ifdef TRP_WITH_ENCLAVE
 #include "../../ports/apple/trp_secure_enclave.h"
@@ -134,6 +136,10 @@ int main(int argc, char **argv)
     trp_signer signer;
     trp_mbedtls_key key = {0};
     trp_charge_options opt;
+    trp_charge_result result;
+    trp_spend_policy policy;
+    const char *max_amount;
+    uint64_t chain_id;
     trp_challenge ch;
     trp_err_t err;
     long status;
@@ -195,7 +201,17 @@ int main(int argc, char **argv)
     opt.signer = &signer;
     opt.now = now;
     opt.valid_after = now - 60 - (uint64_t)arc4random_uniform(86400); /* a random past second */
-    opt.default_chain_id = strtoull(env("TRP_CHAIN_ID"), NULL, 10);
+    /* The device's own limits: the server only asks, this decides. */
+    memset(&policy, 0, sizeof(policy));
+    max_amount = getenv("TRP_MAX_AMOUNT") ? getenv("TRP_MAX_AMOUNT") : "100000";
+    if (trp_u256_from_decimal(max_amount, strlen(max_amount), policy.max_amount) != TRP_OK) {
+        fprintf(stderr, "TRP_MAX_AMOUNT must be a decimal number of base units\n");
+        return 2;
+    }
+    chain_id = strtoull(env("TRP_CHAIN_ID"), NULL, 10);
+    policy.chain_ids = &chain_id;
+    policy.chain_id_count = 1;
+    opt.policy = &policy;
     opt.gas_limit = strtoull(env("TRP_GAS"), NULL, 10);
     opt.max_fee_per_gas = strtoull(env("TRP_MAX_FEE"), NULL, 10);
     opt.max_priority_fee_per_gas = strtoull(env("TRP_PRIORITY_FEE"), NULL, 10);
@@ -203,7 +219,11 @@ int main(int argc, char **argv)
     opt.client_id.ptr = "transponder";
     opt.client_id.len = 11;
 
-    err = trp_tempo_charge(&ch, &opt, credential, sizeof(credential), work, sizeof(work));
+    err = trp_tempo_charge(&ch, &opt, credential, sizeof(credential), work, sizeof(work), &result);
+    if (err == TRP_ERR_DENIED) {
+        fprintf(stderr, "refused: the challenge is outside this device's spending policy\n");
+        return 1;
+    }
     if (key.key) trp_mbedtls_signer_free(&key);
     if (err != TRP_OK) {
         fprintf(stderr, "could not build the payment (%d)\n", (int)err);
@@ -215,7 +235,19 @@ int main(int argc, char **argv)
     status = get(argv[1], header_line, &ex);
     printf("GET %s with payment -> %ld\n", argv[1], status);
     printf("%s\n", ex.body);
-    if (ex.receipt[0]) printf("Payment-Receipt:%s\n", ex.receipt);
+    if (ex.receipt[0]) {
+        static char receipt_scratch[2 * sizeof(ex.receipt) + 16];
+        trp_receipt receipt;
+        const char *value = ex.receipt;
+        while (*value == ' ') value++;
+        printf("Payment-Receipt:%s\n", ex.receipt);
+        if (trp_receipt_parse(value, strlen(value), &receipt, receipt_scratch, sizeof(receipt_scratch)) == TRP_OK)
+            printf("receipt %s: %.*s\n",
+                   trp_receipt_verify(&receipt, "tempo", result.request.fee_payer ? NULL : result.tx_hash) == TRP_OK
+                       ? "matches the transaction this device signed"
+                       : "does NOT match",
+                   (int)receipt.reference.len, receipt.reference.ptr);
+    }
     curl_global_cleanup();
     return status == 200 ? 0 : 1;
 }

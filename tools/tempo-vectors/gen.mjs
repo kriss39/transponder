@@ -21,6 +21,7 @@ const recipient = '0x742d35cc6634c0532925a3b844bc9e7595f8fe00'
 const transferWithMemo = AbiFunction.from(
   'function transferWithMemo(address to, uint256 amount, bytes32 memo)',
 )
+const transfer = AbiFunction.from('function transfer(address to, uint256 amount)')
 
 function attributionMemo({ serverId, clientId, challengeId }) {
   const tag = Hex.slice(Hash.keccak256(Bytes.fromString('mpp'), { as: 'Hex' }), 0, 4)
@@ -192,13 +193,45 @@ const flows = [
     maxPriorityFeePerGas: 1n,
     feeToken: token,
   },
+  {
+    name: 'splits',
+    challenge: {
+      id: 'ch_charge_3',
+      realm: 'api.example.com',
+      method: 'tempo',
+      intent: 'charge',
+      expires: '2026-10-14T10:00:20Z',
+      request: {
+        amount: '1000',
+        currency: token,
+        recipient,
+        methodDetails: {
+          chainId: 42431,
+          splits: [
+            { amount: '300', recipient: '0x1111111111111111111111111111111111111111' },
+            {
+              amount: '200',
+              recipient: '0x2222222222222222222222222222222222222222',
+              memo: '0x00000000000000000000000000000000000000000000000000000000000000ff',
+            },
+          ],
+        },
+      },
+    },
+    clientId: undefined,
+    validAfter: 1700000456,
+    gas: 160000n,
+    maxFeePerGas: 30000000000n,
+    maxPriorityFeePerGas: 0n,
+    feeToken: token,
+  },
 ]
 
 out.push('typedef struct {')
 out.push('    const char *name, *wire, *client_id;')
 out.push('    uint64_t now, valid_after, gas, max_fee_per_gas, max_priority_fee_per_gas;')
 out.push('    int has_fee_token;')
-out.push('    const char *digest, *sig_r, *sig_s, *credential;')
+out.push('    const char *digest, *sig_r, *sig_s, *credential, *tx_hash;')
 out.push('} charge_vector;')
 out.push('')
 out.push('static const charge_vector CHARGE_VECTORS[] = {')
@@ -215,10 +248,21 @@ for (const f of flows) {
   const details = ch.request.methodDetails
   const memo = details.memo ?? attributionMemo({ serverId: ch.realm, clientId: f.clientId, challengeId: ch.id })
   const validBefore = Math.min(now + 25, Math.floor(Date.parse(ch.expires) / 1000))
-  const data = AbiFunction.encodeData(transferWithMemo, [ch.request.recipient, BigInt(ch.request.amount), memo])
+  // mppx's getTransfers: the primary keeps total - splits and the memo; splits follow in order.
+  const splits = details.splits ?? []
+  const primary = BigInt(ch.request.amount) - splits.reduce((sum, s) => sum + BigInt(s.amount), 0n)
+  const calls = [
+    { to: ch.request.currency, data: AbiFunction.encodeData(transferWithMemo, [ch.request.recipient, primary, memo]) },
+    ...splits.map((s) => ({
+      to: ch.request.currency,
+      data: s.memo
+        ? AbiFunction.encodeData(transferWithMemo, [s.recipient, BigInt(s.amount), s.memo])
+        : AbiFunction.encodeData(transfer, [s.recipient, BigInt(s.amount)]),
+    })),
+  ]
   const envelope = TxEnvelopeTempo.from({
     chainId: details.chainId,
-    calls: [{ to: ch.request.currency, data }],
+    calls,
     gas: f.gas,
     maxFeePerGas: f.maxFeePerGas,
     maxPriorityFeePerGas: f.maxPriorityFeePerGas,
@@ -256,7 +300,8 @@ for (const f of flows) {
   out.push(`     ${now}u, ${f.validAfter ?? 0}u, ${f.gas}u, ${f.maxFeePerGas}u, ${f.maxPriorityFeePerGas}u, ${f.feeToken ? 1 : 0},`)
   out.push(`     ${hex(digest)},`)
   out.push(`     ${hex(Hex.fromNumber(signature.r, { size: 32 }))}, ${hex(Hex.fromNumber(signature.s, { size: 32 }))},`)
-  out.push(`     ${cstr(header)}},`)
+  out.push(`     ${cstr(header)},`)
+  out.push(`     ${hex(Hash.keccak256(serialized))}},`)
 }
 
 out.push('};')

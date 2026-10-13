@@ -78,6 +78,18 @@ void trp_tempo_transfer_with_memo(const uint8_t to[TRP_ADDRESS_LEN],
     memcpy(out + 68, memo, TRP_MEMO_LEN);
 }
 
+void trp_tempo_transfer(const uint8_t to[TRP_ADDRESS_LEN], const uint8_t amount[TRP_U256_LEN],
+                        uint8_t out[TRP_TRANSFER_LEN])
+{
+    /* First 4 bytes of keccak256("transfer(address,uint256)"). */
+    static const uint8_t SELECTOR[4] = {0xa9, 0x05, 0x9c, 0xbb};
+
+    memcpy(out, SELECTOR, 4);
+    memset(out + 4, 0, 12);
+    memcpy(out + 16, to, TRP_ADDRESS_LEN);
+    memcpy(out + 36, amount, TRP_U256_LEN);
+}
+
 /* Fields 1-13 of the transaction, in order, as they appear in the sender hash. */
 static void write_fields(trp_rlp_writer *w, const trp_tempo_tx *tx)
 {
@@ -136,8 +148,8 @@ static trp_err_t check_tx(const trp_tempo_tx *tx)
     return TRP_OK;
 }
 
-trp_err_t trp_tempo_sender_hash(const trp_tempo_tx *tx, uint8_t *buf, size_t buf_cap,
-                                uint8_t out[32])
+trp_err_t trp_tempo_signing_payload(const trp_tempo_tx *tx, uint8_t *buf, size_t buf_cap,
+                                    size_t *out_len)
 {
     trp_rlp_writer w;
     size_t list;
@@ -151,7 +163,33 @@ trp_err_t trp_tempo_sender_hash(const trp_tempo_tx *tx, uint8_t *buf, size_t buf
     write_fields(&w, tx);
     trp_rlp_list_end(&w, list);
     if (w.err != TRP_OK) return w.err;
-    trp_keccak256(buf, w.len + 1, out);
+    *out_len = w.len + 1;
+    return TRP_OK;
+}
+
+trp_err_t trp_tempo_sender_hash(const trp_tempo_tx *tx, uint8_t *buf, size_t buf_cap,
+                                uint8_t out[32])
+{
+    size_t len;
+    trp_err_t err = trp_tempo_signing_payload(tx, buf, buf_cap, &len);
+
+    if (err != TRP_OK) return err;
+    trp_keccak256(buf, len, out);
+    return TRP_OK;
+}
+
+trp_err_t trp_tempo_expiring_nonce_hash(const trp_tempo_tx *tx, const uint8_t sender[TRP_ADDRESS_LEN],
+                                        uint8_t *buf, size_t buf_cap, uint8_t out[32])
+{
+    size_t len;
+    trp_err_t err = trp_tempo_signing_payload(tx, buf, buf_cap, &len);
+    trp_keccak_ctx ctx;
+
+    if (err != TRP_OK) return err;
+    trp_keccak256_init(&ctx);
+    trp_keccak256_update(&ctx, buf, len);
+    trp_keccak256_update(&ctx, sender, TRP_ADDRESS_LEN);
+    trp_keccak256_final(&ctx, out);
     return TRP_OK;
 }
 

@@ -5,7 +5,7 @@
 #include "transponder/base64url.h"
 #include "internal.h"
 
-#define MAX_PARAMS 32
+#define MAX_PARAMS 16 /* MPP defines 10; the rest are unknown extensions */
 #define SCHEME "payment"
 #define SCHEME_LEN 7
 
@@ -112,9 +112,32 @@ static trp_err_t append(arena *a, const char *s, size_t n)
     return TRP_OK;
 }
 
-/* NUL-terminate the bytes appended since `mark` and describe them. */
+/*
+ * NUL-terminate the bytes appended since `mark` and describe them. Header
+ * values are byte strings: when they are not valid UTF-8, each byte is read
+ * as Latin-1 and re-encoded, as JavaScript (and so mppx) reads them.
+ */
 static trp_err_t seal(arena *a, size_t mark, trp_str *out)
 {
+    uint8_t *s = (uint8_t *)a->buf + mark;
+    size_t len = a->len - mark, high = 0, i, j;
+
+    if (!trp_utf8_valid(s, len)) {
+        for (i = 0; i < len; i++) high += s[i] >= 0x80;
+        if (a->cap - a->len < high + 1) return TRP_ERR_BUFFER;
+        /* Widen in place from the back: byte i moves to i + (high bytes before it). */
+        j = len + high;
+        for (i = len; i-- > 0;) {
+            uint8_t b = s[i];
+            if (b < 0x80) {
+                s[--j] = b;
+            } else {
+                s[--j] = (uint8_t)(0x80 | (b & 0x3f));
+                s[--j] = (uint8_t)(0xc0 | (b >> 6));
+            }
+        }
+        a->len = mark + len + high;
+    }
     if (a->cap - a->len < 1) return TRP_ERR_BUFFER;
     a->buf[a->len++] = '\0';
     out->ptr = a->buf + mark;
@@ -174,7 +197,10 @@ static trp_err_t read_token(const char *v, size_t len, size_t *pos, arena *a, tr
     trp_err_t err;
 
     end = start;
-    while (end < len && v[end] != ',') end++;
+    while (end < len && v[end] != ',') {
+        if (v[end] == '"' || (unsigned char)v[end] < 0x20) return TRP_ERR_INVALID; /* not a token */
+        end++;
+    }
     *pos = end;
     while (end > start && is_space(v[end - 1])) end--;
     while (start < end && is_space(v[start])) start++;

@@ -19,6 +19,7 @@ extern "C" {
 #define TRP_P256_PUBKEY_LEN 64 /* x || y */
 #define TRP_P256_SIGNATURE_LEN 130
 #define TRP_TRANSFER_WITH_MEMO_LEN 100
+#define TRP_TRANSFER_LEN 68
 
 /* A decimal string ("1000") as a 32-byte big-endian integer. Digits only. */
 trp_err_t trp_u256_from_decimal(const char *s, size_t len, uint8_t out[TRP_U256_LEN]);
@@ -37,6 +38,10 @@ void trp_tempo_transfer_with_memo(const uint8_t to[TRP_ADDRESS_LEN],
                                   const uint8_t amount[TRP_U256_LEN],
                                   const uint8_t memo[TRP_MEMO_LEN],
                                   uint8_t out[TRP_TRANSFER_WITH_MEMO_LEN]);
+
+/* Calldata for TIP-20 transfer(address to, uint256 amount). */
+void trp_tempo_transfer(const uint8_t to[TRP_ADDRESS_LEN], const uint8_t amount[TRP_U256_LEN],
+                        uint8_t out[TRP_TRANSFER_LEN]);
 
 /* One call in a batch. Its value is always zero: payments move TIP-20 tokens. */
 typedef struct {
@@ -64,11 +69,26 @@ typedef struct {
 } trp_tempo_tx;
 
 /*
- * The hash the sender signs: keccak256(0x76 || rlp(fields)). `buf` is
+ * The bytes the sender signs over, before hashing: 0x76 || rlp(fields)
+ * (ox calls this encodeForSigning). Written to `buf`; returns the length.
+ */
+trp_err_t trp_tempo_signing_payload(const trp_tempo_tx *tx, uint8_t *buf, size_t buf_cap,
+                                    size_t *out_len);
+
+/*
+ * The hash the sender signs: keccak256 of the signing payload. `buf` is
  * working space for the RLP encoding (300 bytes covers one transfer).
  */
 trp_err_t trp_tempo_sender_hash(const trp_tempo_tx *tx, uint8_t *buf, size_t buf_cap,
                                 uint8_t out[32]);
+
+/*
+ * TIP-1034's expiringNonceHash of a channel-opening transaction:
+ * keccak256(signing payload || sender address). The sender is the account
+ * that pays, not the access key.
+ */
+trp_err_t trp_tempo_expiring_nonce_hash(const trp_tempo_tx *tx, const uint8_t sender[TRP_ADDRESS_LEN],
+                                        uint8_t *buf, size_t buf_cap, uint8_t out[32]);
 
 /* What an access key signs for Keychain V2: keccak256(0x04 || sender_hash || owner). */
 void trp_tempo_keychain_digest(const uint8_t sender_hash[32], const uint8_t owner[TRP_ADDRESS_LEN],

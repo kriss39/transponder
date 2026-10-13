@@ -12,7 +12,7 @@ static int parses(const char *s)
 
 static void test_validation(void)
 {
-    char deep[80];
+    char deep[2 * TRP_JSON_MAX_DEPTH + 4];
     int i;
 
     CHECK(parses("{}"));
@@ -42,14 +42,14 @@ static void test_validation(void)
     CHECK(!parses("\"\xed\xa0\x80\"")); /* encoded surrogate */
     CHECK(!parses("\"\xf4\x90\x80\x80\"")); /* past U+10FFFF */
 
-    /* Nesting: 32 levels are accepted, 33 are not. */
-    for (i = 0; i < 32; i++) deep[i] = '[';
-    for (i = 0; i < 32; i++) deep[32 + i] = ']';
-    deep[64] = '\0';
+    /* Nesting: TRP_JSON_MAX_DEPTH levels are accepted, one more is not. */
+    for (i = 0; i < TRP_JSON_MAX_DEPTH; i++) deep[i] = '[';
+    for (i = 0; i < TRP_JSON_MAX_DEPTH; i++) deep[TRP_JSON_MAX_DEPTH + i] = ']';
+    deep[2 * TRP_JSON_MAX_DEPTH] = '\0';
     CHECK(parses(deep));
-    for (i = 0; i < 33; i++) deep[i] = '[';
-    for (i = 0; i < 33; i++) deep[33 + i] = ']';
-    deep[66] = '\0';
+    for (i = 0; i <= TRP_JSON_MAX_DEPTH; i++) deep[i] = '[';
+    for (i = 0; i <= TRP_JSON_MAX_DEPTH; i++) deep[TRP_JSON_MAX_DEPTH + 1 + i] = ']';
+    deep[2 * TRP_JSON_MAX_DEPTH + 2] = '\0';
     CHECK(!parses(deep));
 }
 
@@ -79,6 +79,8 @@ static void test_lookup(void)
     while (trp_json_next(&v, &pos, &item) == TRP_OK) count++;
     CHECK(count == 3);
     CHECK(item.type == TRP_JSON_OBJECT);
+    pos = v.len + 10; /* a cursor past the array is rejected, not read from */
+    CHECK(trp_json_next(&v, &pos, &item) == TRP_ERR_INVALID);
 
     /* A repeated key is an error, not "first wins" or "last wins". */
     CHECK(trp_json_parse("{\"a\":1,\"a\":2}", 13, &root) == TRP_OK);
@@ -88,6 +90,10 @@ static void test_lookup(void)
     CHECK(trp_json_parse("\"abcdef\"", 8, &v) == TRP_OK);
     CHECK(trp_json_get_string(&v, s, 6, &n) == TRP_ERR_BUFFER);
     CHECK(trp_json_get_string(&v, s, 7, &n) == TRP_OK);
+    /* Zero capacity, even for an empty string, is too small (it needs the NUL). */
+    CHECK(trp_json_parse("\"\"", 2, &v) == TRP_OK);
+    CHECK(trp_json_get_string(&v, s, 0, &n) == TRP_ERR_BUFFER);
+    CHECK(trp_json_get_string(&v, s, 1, &n) == TRP_OK && n == 0);
     CHECK(trp_json_parse("\"\\ud83d\"", 8, &v) == TRP_OK);
     CHECK(trp_json_get_string(&v, s, sizeof(s), &n) == TRP_ERR_INVALID);
 

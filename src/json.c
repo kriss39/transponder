@@ -274,6 +274,7 @@ static trp_err_t unescape(const char *raw, size_t raw_len, char *out, size_t out
 {
     size_t i = 0, o = 0;
 
+    if (out_cap == 0) return TRP_ERR_BUFFER;
     while (i < raw_len) {
         char buf[4];
         const char *src = buf;
@@ -379,7 +380,7 @@ trp_err_t trp_json_next(const trp_json *array, size_t *pos, trp_json *out)
     cursor c;
     trp_err_t err;
 
-    if (array->type != TRP_JSON_ARRAY) return TRP_ERR_INVALID;
+    if (array->type != TRP_JSON_ARRAY || array->len < 2 || *pos >= array->len) return TRP_ERR_INVALID;
     c.p = array->ptr + (*pos == 0 ? 1 : *pos);
     c.end = array->ptr + array->len;
     skip_ws(&c);

@@ -2,6 +2,9 @@
 
 #include "transponder/base64url.h"
 #include "transponder/charge.h"
+#include "transponder/hex.h"
+
+#include <string.h>
 
 static trp_err_t take_string(const trp_json *obj, const char *key, char **cursor, size_t *left,
                              trp_str *out)
@@ -50,5 +53,25 @@ trp_err_t trp_receipt_parse(const char *value, size_t len, trp_receipt *out, cha
         (err = take_string(&out->json, "reference", &cursor, &left, &out->reference)) != TRP_OK)
         return err;
     if (trp_parse_rfc3339(out->timestamp.ptr, out->timestamp.len, &when) != TRP_OK) return TRP_ERR_INVALID;
+    return TRP_OK;
+}
+
+static int str_is(trp_str s, const char *lit)
+{
+    return s.len == strlen(lit) && memcmp(s.ptr, lit, s.len) == 0;
+}
+
+trp_err_t trp_receipt_verify(const trp_receipt *receipt, const char *method, const uint8_t *tx_hash)
+{
+    uint8_t reference[32];
+    size_t n = 0;
+
+    if (!str_is(receipt->status, "success")) return TRP_ERR_DENIED;
+    if (method && !str_is(receipt->method, method)) return TRP_ERR_DENIED;
+    if (!tx_hash) return TRP_OK;
+    if (receipt->reference.len != 66 ||
+        trp_hex_decode(receipt->reference.ptr, receipt->reference.len, reference, sizeof(reference), &n) != TRP_OK ||
+        n != 32 || memcmp(reference, tx_hash, 32) != 0)
+        return TRP_ERR_DENIED;
     return TRP_OK;
 }

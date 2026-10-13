@@ -25,6 +25,14 @@ typedef struct {
 trp_err_t trp_receipt_parse(const char *value, size_t len, trp_receipt *out, char *scratch,
                             size_t scratch_cap);
 
+/*
+ * Check a receipt against what the device paid: status "success", the given
+ * method, and, when `tx_hash` is not NULL, a reference equal to that
+ * transaction hash (see trp_charge_result for when the hash is known).
+ * TRP_OK on a match, TRP_ERR_DENIED if the receipt does not confirm it.
+ */
+trp_err_t trp_receipt_verify(const trp_receipt *receipt, const char *method, const uint8_t *tx_hash);
+
 #ifdef __cplusplus
 }
 #endif

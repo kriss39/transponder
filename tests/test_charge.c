@@ -3,11 +3,13 @@
 #include "transponder/base64url.h"
 #include "transponder/challenge.h"
 #include "transponder/charge.h"
+#include "transponder/json.h"
 #include "tempo_vectors.h"
 
 /*
- * Stands in for a secure element: it checks it was asked to sign the digest
- * ox computed, then returns the signature ox produced for it.
+ * Stands in for a secure element. In checking mode it signs only the digest
+ * ox computed and returns ox's signature for it; in stamp mode it returns a
+ * fixed valid-looking signature for anything, to reach later stages.
  */
 typedef struct {
     uint8_t expected_digest[32];
@@ -15,12 +17,18 @@ typedef struct {
     uint8_t s[32];
     int calls;
     int fail;
+    int stamp;
 } fake_key;
 
 static trp_err_t fake_sign(void *ctx, const uint8_t digest[32], uint8_t r[32], uint8_t s[32])
 {
     fake_key *k = (fake_key *)ctx;
     k->calls++;
+    if (k->stamp) {
+        memset(r, 0x11, 32);
+        memset(s, 0x22, 32);
+        return TRP_OK;
+    }
     if (k->fail || memcmp(digest, k->expected_digest, 32) != 0) return TRP_ERR_CRYPTO;
     memcpy(r, k->r, 32);
     memcpy(s, k->s, 32);
@@ -35,8 +43,11 @@ static size_t unhex(const char *hex, uint8_t *out, size_t cap)
 }
 
 static char scratch[4096];
-static uint8_t work[4096];
-static char header[4096];
+static uint8_t work[8192];
+static char header[8192];
+
+/* Allows anything up to 10^12 base units on any token, recipient and chain. */
+static trp_spend_policy open_policy;
 
 static void setup(trp_signer *signer, fake_key *key, uint8_t owner[20], uint8_t token[20],
                   trp_charge_options *opt)
@@ -44,6 +55,8 @@ static void setup(trp_signer *signer, fake_key *key, uint8_t owner[20], uint8_t 
     memset(key, 0, sizeof(*key));
     memset(opt, 0, sizeof(*opt));
     memset(signer, 0, sizeof(*signer));
+    memset(&open_policy, 0, sizeof(open_policy));
+    trp_u256_from_decimal("1000000000000", 13, open_policy.max_amount);
     signer->sign_digest = fake_sign;
     signer->ctx = key;
     unhex(TV_PUBLIC_KEY, signer->public_key, sizeof(signer->public_key));
@@ -51,6 +64,7 @@ static void setup(trp_signer *signer, fake_key *key, uint8_t owner[20], uint8_t 
     unhex(TV_TOKEN, token, 20);
     opt->owner = owner;
     opt->signer = signer;
+    opt->policy = &open_policy;
 }
 
 static void test_vectors(void)
@@ -61,8 +75,9 @@ static void test_vectors(void)
         const charge_vector *v = &CHARGE_VECTORS[i];
         trp_signer signer;
         fake_key key;
-        uint8_t owner[20], token[20];
+        uint8_t owner[20], token[20], want_hash[32];
         trp_charge_options opt;
+        trp_charge_result result;
         trp_challenge ch;
         trp_err_t err;
 
@@ -82,20 +97,22 @@ static void test_vectors(void)
         }
 
         CHECK(trp_challenge_parse(v->wire, strlen(v->wire), &ch, scratch, sizeof(scratch)) == TRP_OK);
-        err = trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work));
+        err = trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work), &result);
         trp_test_checks++;
         if (err != TRP_OK || strcmp(header, v->credential) != 0) {
             trp_test_failures++;
             printf("  FAIL charge/%s (err %d, signer calls %d)\n", v->name, (int)err, key.calls);
         }
         CHECK(key.calls == 1);
+        unhex(v->tx_hash, want_hash, 32);
+        CHECK(memcmp(result.tx_hash, want_hash, 32) == 0);
     }
 }
 
 /* A challenge for `request_json`, so the error paths can be exercised. */
 static trp_err_t charge_with(const char *request_json, const char *expires, trp_charge_options *opt)
 {
-    char req[512], wire[1024];
+    char req[1024], wire[2048];
     trp_challenge ch;
     trp_err_t err;
 
@@ -105,65 +122,162 @@ static trp_err_t charge_with(const char *request_json, const char *expires, trp_
              "Payment id=\"t\", realm=\"r\", method=\"tempo\", intent=\"charge\", request=\"%s\"%s%s%s",
              req, expires ? ", expires=\"" : "", expires ? expires : "", expires ? "\"" : "");
     if ((err = trp_challenge_parse(wire, strlen(wire), &ch, scratch, sizeof(scratch))) != TRP_OK) return err;
-    return trp_tempo_charge(&ch, opt, header, sizeof(header), work, sizeof(work));
+    return trp_tempo_charge(&ch, opt, header, sizeof(header), work, sizeof(work), NULL);
 }
 
-static void test_errors(void)
+#define TOKEN "0x20c0000000000000000000000000000000000000"
+#define RECIPIENT "0x742d35cc6634c0532925a3b844bc9e7595f8fe00"
+#define BASE "{\"amount\":\"5\",\"currency\":\"" TOKEN "\",\"recipient\":\"" RECIPIENT "\""
+
+static trp_err_t deny_all(void *ctx, const trp_challenge *ch, const trp_charge_request *req)
 {
-    const char *base = "{\"amount\":\"5\",\"currency\":\"0x20c0000000000000000000000000000000000000\","
-                       "\"recipient\":\"0x742d35cc6634c0532925a3b844bc9e7595f8fe00\"";
-    char json[512];
+    (void)ch;
+    (void)req;
+    ++*(int *)ctx;
+    return TRP_ERR_DENIED;
+}
+
+static void test_policy(void)
+{
     trp_signer signer;
     fake_key key;
-    uint8_t owner[20], token[20];
+    uint8_t owner[20], token[20], other[20] = {0x99};
     trp_charge_options opt;
+    trp_spend_policy policy;
+    uint64_t mainnet = TRP_TEMPO_MAINNET;
+    int asked = 0;
 
     setup(&signer, &key, owner, token, &opt);
     opt.now = 1791972000u;
     opt.gas_limit = 100000;
-    opt.default_chain_id = 42431;
+    opt.max_fee_per_gas = 1;
+    key.stamp = 1;
 
-    /* The fake key refuses any digest it wasn't told about: the happy path fails at signing. */
-    snprintf(json, sizeof(json), "%s}", base);
-    CHECK(charge_with(json, NULL, &opt) == TRP_ERR_CRYPTO);
+    /* Within the policy: it signs. */
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_OK);
+    CHECK(key.calls == 1);
 
-    /* No chainId in the request and no default. */
-    opt.default_chain_id = 0;
-    CHECK(charge_with(json, NULL, &opt) == TRP_ERR_INVALID);
-    opt.default_chain_id = 42431;
+    /* Over the limit, a token or recipient not listed, or the wrong chain: no signature. */
+    policy = open_policy;
+    trp_u256_from_decimal("4", 1, policy.max_amount);
+    opt.policy = &policy;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
+    policy = open_policy;
+    policy.tokens = (const uint8_t(*)[20])other;
+    policy.token_count = 1;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
+    policy = open_policy;
+    policy.recipients = (const uint8_t(*)[20])other;
+    policy.recipient_count = 1;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
+    policy = open_policy;
+    policy.chain_ids = &mainnet; /* the request names no chain: Moderato */
+    policy.chain_id_count = 1;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"chainId\":4217}}", NULL, &opt) == TRP_OK);
+    CHECK(key.calls == 2);
 
-    CHECK(charge_with(json, "2026-10-14T09:59:59Z", &opt) == TRP_ERR_INVALID); /* expired */
-    CHECK(charge_with(json, "not a date", &opt) == TRP_ERR_INVALID);
+    /* A split to a recipient outside the list is refused too. */
+    policy = open_policy;
+    unhex(RECIPIENT, other, 20);
+    policy.recipients = (const uint8_t(*)[20])other;
+    policy.recipient_count = 1;
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"splits\":[{\"amount\":\"1\",\"recipient\":"
+                           "\"0x1111111111111111111111111111111111111111\"}]}}",
+                      NULL, &opt) == TRP_ERR_DENIED);
+    CHECK(key.calls == 2);
 
-    snprintf(json, sizeof(json), "%s,\"methodDetails\":{\"supportedModes\":[\"push\"]}}", base);
-    CHECK(charge_with(json, NULL, &opt) == TRP_ERR_UNSUPPORTED);
-    snprintf(json, sizeof(json), "%s,\"methodDetails\":{\"splits\":[{\"amount\":\"1\"}]}}", base);
-    CHECK(charge_with(json, NULL, &opt) == TRP_ERR_UNSUPPORTED);
-    snprintf(json, sizeof(json), "%s,\"methodDetails\":{\"splits\":[]}}", base);
-    CHECK(charge_with(json, NULL, &opt) == TRP_ERR_CRYPTO); /* empty splits are fine */
-    snprintf(json, sizeof(json), "%s,\"methodDetails\":{\"memo\":\"0x1234\"}}", base);
-    CHECK(charge_with(json, NULL, &opt) == TRP_ERR_INVALID);
-    snprintf(json, sizeof(json), "%s,\"methodDetails\":{\"feePayer\":\"yes\"}}", base);
-    CHECK(charge_with(json, NULL, &opt) == TRP_ERR_INVALID);
+    /* The approve callback has the last word. */
+    opt.policy = &open_policy;
+    opt.approve = deny_all;
+    opt.approve_ctx = &asked;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
+    CHECK(asked == 1 && key.calls == 2);
+    opt.approve = NULL;
 
-    CHECK(charge_with("{\"amount\":\"0\",\"currency\":\"0x20c0000000000000000000000000000000000000\","
-                      "\"recipient\":\"0x742d35cc6634c0532925a3b844bc9e7595f8fe00\"}",
-                      NULL, &opt) == TRP_ERR_UNSUPPORTED);
-    CHECK(charge_with("{\"amount\":\"5\",\"currency\":\"0x20c0\","
-                      "\"recipient\":\"0x742d35cc6634c0532925a3b844bc9e7595f8fe00\"}",
+    /* No policy, or a zero limit, is a configuration error. */
+    opt.policy = NULL;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_INVALID);
+    memset(&policy, 0, sizeof(policy));
+    opt.policy = &policy;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_INVALID);
+    CHECK(key.calls == 2);
+}
+
+static void test_errors(void)
+{
+    trp_signer signer;
+    fake_key key;
+    uint8_t owner[20], token[20];
+    trp_charge_options opt;
+    trp_charge_request req;
+    trp_challenge ch;
+    trp_json root, v;
+    uint8_t decoded[4096];
+    size_t n;
+    char source[128];
+    const char *w;
+
+    setup(&signer, &key, owner, token, &opt);
+    opt.now = 1791972000u;
+    opt.gas_limit = 100000;
+    opt.max_fee_per_gas = 1;
+
+    /* The fake key refuses digests it was not told about. */
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_CRYPTO);
+    CHECK(charge_with(BASE "}", "2026-10-14T09:59:59Z", &opt) == TRP_ERR_INVALID); /* expired */
+    CHECK(charge_with(BASE "}", "not a date", &opt) == TRP_ERR_INVALID);
+    CHECK(charge_with(BASE "}", "2026-02-30T10:00:00Z", &opt) == TRP_ERR_INVALID);
+
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"supportedModes\":[\"push\"]}}", NULL, &opt) == TRP_ERR_UNSUPPORTED);
+    /* An escaped "pull" is still "pull". */
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"supportedModes\":[\"\\u0070ull\"]}}", NULL, &opt) == TRP_ERR_CRYPTO);
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"splits\":[]}}", NULL, &opt) == TRP_ERR_CRYPTO);
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"splits\":[{\"amount\":\"5\",\"recipient\":\"" RECIPIENT "\"}]}}",
+                      NULL, &opt) == TRP_ERR_INVALID); /* nothing left for the primary */
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"splits\":[{\"amount\":\"0\",\"recipient\":\"" RECIPIENT "\"}]}}",
                       NULL, &opt) == TRP_ERR_INVALID);
-    CHECK(charge_with("{\"amount\":5,\"currency\":\"0x20c0000000000000000000000000000000000000\","
-                      "\"recipient\":\"0x742d35cc6634c0532925a3b844bc9e7595f8fe00\"}",
-                      NULL, &opt) == TRP_ERR_INVALID);
+    CHECK(charge_with("{\"amount\":\"9\",\"currency\":\"" TOKEN "\",\"recipient\":\"" RECIPIENT "\","
+                      "\"methodDetails\":{\"splits\":["
+                      "{\"amount\":\"1\",\"recipient\":\"" RECIPIENT "\"},{\"amount\":\"1\",\"recipient\":\"" RECIPIENT "\"},"
+                      "{\"amount\":\"1\",\"recipient\":\"" RECIPIENT "\"},{\"amount\":\"1\",\"recipient\":\"" RECIPIENT "\"},"
+                      "{\"amount\":\"1\",\"recipient\":\"" RECIPIENT "\"}]}}",
+                      NULL, &opt) == TRP_ERR_UNSUPPORTED); /* more than TRP_MAX_SPLITS */
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"memo\":\"0x1234\"}}", NULL, &opt) == TRP_ERR_INVALID);
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"feePayer\":\"yes\"}}", NULL, &opt) == TRP_ERR_INVALID);
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"chainId\":0}}", NULL, &opt) == TRP_ERR_INVALID);
+    CHECK(charge_with("{\"amount\":\"0\",\"currency\":\"" TOKEN "\",\"recipient\":\"" RECIPIENT "\"}", NULL, &opt) ==
+          TRP_ERR_UNSUPPORTED);
+    CHECK(charge_with("{\"amount\":\"5\",\"currency\":\"0x20c0\",\"recipient\":\"" RECIPIENT "\"}", NULL, &opt) ==
+          TRP_ERR_INVALID);
+    CHECK(charge_with("{\"amount\":5,\"currency\":\"" TOKEN "\",\"recipient\":\"" RECIPIENT "\"}", NULL, &opt) ==
+          TRP_ERR_INVALID);
+
+    /* Option checks. */
+    opt.valid_after = opt.now + 100; /* after the transaction would expire */
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_INVALID);
+    opt.valid_after = 0;
+    opt.max_fee_per_gas = 0; /* the client pays fees but allows no fee */
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_INVALID);
+    opt.max_fee_per_gas = 1;
+
+    /* No chainId means Moderato, as the spec says. */
+    w = "Payment id=\"t\", realm=\"r\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiIxIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJyZWNpcGllbnQiOiIweDc0MmQzNWNjNjYzNGMwNTMyOTI1YTNiODQ0YmM5ZTc1OTVmOGZlMDAifQ\"";
+    CHECK(trp_challenge_parse(w, strlen(w), &ch, scratch, sizeof(scratch)) == TRP_OK);
+    CHECK(trp_charge_request_parse(&ch, &req) == TRP_OK && req.chain_id == TRP_TEMPO_MODERATO);
+
+    /* The largest chain ID fits in the credential's source (once a 64-byte stack overflow). */
+    key.stamp = 1;
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"chainId\":18446744073709551615}}", NULL, &opt) == TRP_OK);
+    CHECK(trp_base64url_decode(header + 8, strlen(header + 8), decoded, sizeof(decoded), &n) == TRP_OK);
+    CHECK(trp_json_parse((const char *)decoded, n, &root) == TRP_OK && trp_json_get(&root, "source", &v) == TRP_OK);
+    CHECK(trp_json_get_string(&v, source, sizeof(source), NULL) == TRP_OK);
+    CHECK(strcmp(source, "did:pkh:eip155:18446744073709551615:0xa11ce00000000000000000000000000000000001") == 0);
 
     /* Not a Tempo charge. */
-    {
-        const char *w = "Payment id=\"t\", realm=\"r\", method=\"stripe\", intent=\"charge\", request=\"e30\"";
-        trp_challenge ch;
-        CHECK(trp_challenge_parse(w, strlen(w), &ch, scratch, sizeof(scratch)) == TRP_OK);
-        CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work)) ==
-              TRP_ERR_UNSUPPORTED);
-    }
+    w = "Payment id=\"t\", realm=\"r\", method=\"stripe\", intent=\"charge\", request=\"e30\"";
+    CHECK(trp_challenge_parse(w, strlen(w), &ch, scratch, sizeof(scratch)) == TRP_OK);
+    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work), NULL) == TRP_ERR_UNSUPPORTED);
 }
 
 static void test_buffers(void)
@@ -187,12 +301,13 @@ static void test_buffers(void)
     opt.client_id.len = strlen(v->client_id);
 
     CHECK(trp_challenge_parse(v->wire, strlen(v->wire), &ch, scratch, sizeof(scratch)) == TRP_OK);
-    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, 1000) == TRP_ERR_BUFFER);
-    CHECK(trp_tempo_charge(&ch, &opt, header, 100, work, sizeof(work)) == TRP_ERR_BUFFER);
-    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, 1000, NULL) == TRP_ERR_BUFFER);
+    CHECK(trp_tempo_charge(&ch, &opt, header, 100, work, sizeof(work), NULL) == TRP_ERR_BUFFER);
+    /* One transfer fits in 4 KB of working space. */
+    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, 4096, NULL) == TRP_OK);
 
     key.fail = 1;
-    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work)) == TRP_ERR_CRYPTO);
+    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work), NULL) == TRP_ERR_CRYPTO);
 }
 
 static void test_helpers(void)
@@ -220,6 +335,8 @@ static void test_helpers(void)
     CHECK(trp_parse_rfc3339("2026-10-14T10:00:00.123Z", 24, &t) == TRP_OK && t == 1791972000u);
     CHECK(trp_parse_rfc3339("2026-10-14T12:30:00+02:30", 25, &t) == TRP_OK && t == 1791972000u);
     CHECK(trp_parse_rfc3339("2024-02-29T00:00:00Z", 20, &t) == TRP_OK && t == 1709164800u);
+    CHECK(trp_parse_rfc3339("2023-02-29T00:00:00Z", 20, &t) == TRP_ERR_INVALID); /* not a leap year */
+    CHECK(trp_parse_rfc3339("2026-04-31T00:00:00Z", 20, &t) == TRP_ERR_INVALID);
     CHECK(trp_parse_rfc3339("2026-10-14T10:00:00", 19, &t) == TRP_ERR_INVALID);
     CHECK(trp_parse_rfc3339("2026-13-14T10:00:00Z", 20, &t) == TRP_ERR_INVALID);
     CHECK(trp_parse_rfc3339("2026-10-14T10:00:00Zjunk", 24, &t) == TRP_ERR_INVALID);
@@ -228,6 +345,7 @@ static void test_helpers(void)
 void test_charge(void)
 {
     test_vectors();
+    test_policy();
     test_errors();
     test_buffers();
     test_helpers();

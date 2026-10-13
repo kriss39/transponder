@@ -116,6 +116,20 @@ static void test_extra_cases(void)
     CHECK(trp_challenge_parse(upper_method, strlen(upper_method), &ch, scratch, sizeof(scratch)) ==
           TRP_ERR_INVALID);
 
+    /* A quote inside an unquoted value is not a token. */
+    {
+        const char *q = "Payment id=a\"b, realm=\"r\", method=\"tempo\", intent=\"charge\", request=\"e30\"";
+        CHECK(trp_challenge_parse(q, strlen(q), &ch, scratch, sizeof(scratch)) == TRP_ERR_INVALID);
+    }
+
+    /* Raw Latin-1 header bytes are read the way JavaScript reads them, as UTF-8 out. */
+    {
+        const char *l1 = "Payment id=\"l\", realm=\"r\", method=\"tempo\", intent=\"charge\", "
+                         "request=\"e30\", description=\"caf\xe9\"";
+        CHECK(trp_challenge_parse(l1, strlen(l1), &ch, scratch, sizeof(scratch)) == TRP_OK);
+        CHECK(str_matches(ch.description, "caf\xc3\xa9"));
+    }
+
     /* Too little scratch is reported, not overrun. */
     CHECK(trp_challenge_parse(alt, strlen(alt), &ch, scratch, 8) == TRP_ERR_BUFFER);
 
@@ -205,9 +219,33 @@ static void test_credential_conformance(void)
     }
 }
 
+static void test_receipt_verify(void)
+{
+    /* {"method":"tempo","reference":"0x" + "ab" x 32,"status":"success","timestamp":"2026-01-29T12:00:30Z"} */
+    const char *wire = "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYmFiYWJhYiIsInN0YXR1cyI6InN1Y2Nlc3MiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTI5VDEyOjAwOjMwWiJ9";
+    uint8_t hash[32], other[32];
+    trp_receipt r;
+
+    memset(hash, 0xab, 32);
+    memset(other, 0xcd, 32);
+    CHECK(trp_receipt_parse(wire, strlen(wire), &r, scratch, sizeof(scratch)) == TRP_OK);
+    CHECK(trp_receipt_verify(&r, "tempo", hash) == TRP_OK);
+    CHECK(trp_receipt_verify(&r, "tempo", NULL) == TRP_OK);
+    CHECK(trp_receipt_verify(&r, "tempo", other) == TRP_ERR_DENIED);
+    CHECK(trp_receipt_verify(&r, "stripe", hash) == TRP_ERR_DENIED);
+    r.status.ptr = "failed";
+    r.status.len = 6;
+    CHECK(trp_receipt_verify(&r, "tempo", hash) == TRP_ERR_DENIED);
+
+    /* The scratch buffer exactly as large as the decoded JSON is reported, not overrun. */
+    CHECK(trp_receipt_parse(wire, strlen(wire), &r, scratch, 140) != TRP_OK);
+}
+
 static void test_receipts(void)
 {
     size_t i;
+
+    test_receipt_verify();
 
     for (i = 0; i < sizeof(RECEIPT_VECTORS) / sizeof(RECEIPT_VECTORS[0]); i++) {
         const receipt_vector *v = &RECEIPT_VECTORS[i];
