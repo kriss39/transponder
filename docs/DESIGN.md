@@ -51,7 +51,7 @@ The device uses **pull mode**: it signs and the server broadcasts. That keeps th
 | Tempo | P-256 signature (130 bytes, low-s) and Keychain wrapper (`0x04`) | done |
 | Tempo | address from P-256 public key | done |
 | Tempo | charge flow: challenge → transaction → signature → credential (`trp_tempo_charge`) | done, credential identical to the reference |
-| Signers | software P-256 (mbedTLS) for host tests and boards without a secure element | |
+| Signers | software P-256 (mbedTLS PSA API, `ports/mbedtls`) for host tests and boards without a secure element | done, signatures identical to ox |
 | Signers | ATECC608A through cryptoauthlib | |
 | Platform | ESP-IDF: HTTP client, time, JSON-RPC calls | |
 | Conformance | mpp-tools adapter (JSON ABI described in `HARNESS_SPEC.md`) | |

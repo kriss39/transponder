@@ -4,7 +4,7 @@
 
 Transponder lets a device pay for an API over the Machine Payments Protocol, the HTTP 402 standard from Tempo and Stripe. It answers a `402 Payment Required` challenge with a signed Tempo transaction, and the signing key never leaves the device's secure element.
 
-> **Status: early.** The MPP protocol core (challenges and credentials) and the encoding and hashing layer are in place and tested. Signing Tempo payments is next, so payments do not work yet.
+> **Status: early.** Transponder answers a Tempo `charge` challenge with a signed credential, identical byte for byte to the reference SDK's. It has not paid on a live network yet; a testnet payment is next.
 
 ## Why
 
@@ -16,8 +16,10 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 
 - [x] Hex, Keccak-256, RLP writer, with host tests
 - [x] MPP core: challenge parsing, `request` decoding, credential encoding, checked against the [tempoxyz/mpp-tools](https://github.com/tempoxyz/mpp-tools) conformance vectors
-- [ ] Tempo `charge`: 0x76 transaction, P-256 and Keychain signatures
-- [ ] Signers: software P-256 (mbedTLS) and ATECC608A
+- [x] Tempo `charge`: 0x76 transaction, P-256 and Keychain signatures, the full challenge → credential flow, checked byte for byte against ox (the library mppx uses)
+- [x] Software P-256 signer on the PSA Crypto API (mbedTLS 3.x and 4.x)
+- [ ] ATECC608A signer
+- [ ] A first payment on Tempo testnet from a computer
 - [ ] ESP-IDF example: an ESP32-WROOM-32SE (ATECC608A built in) pays a live MPP endpoint on Tempo testnet
 - [ ] A harness adapter so the mpp-tools conformance runner can test Transponder directly, in CI
 
@@ -30,6 +32,7 @@ You need a C compiler and `make`.
 ```sh
 make test   # build and run the unit tests
 make asan   # the same, with address and undefined-behaviour sanitizers
+make test-mbedtls   # the software signer (needs mbedTLS: brew install mbedtls)
 ```
 
 To refresh the conformance vectors from a checkout of tempoxyz/mpp-tools:

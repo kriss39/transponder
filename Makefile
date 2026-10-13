@@ -7,10 +7,10 @@ WARNINGS = -std=c99 -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wno-sign-con
 CPPFLAGS = -Iinclude
 
 SRC = $(wildcard src/*.c)
-TEST_SRC = $(wildcard tests/*.c)
+TEST_SRC = $(filter-out tests/port_%.c,$(wildcard tests/*.c))
 BUILD = build
 
-.PHONY: all test asan clean
+.PHONY: all test asan test-mbedtls clean
 
 all: $(BUILD)/libtransponder.a
 
@@ -31,6 +31,16 @@ asan: | $(BUILD)
 	$(CC) $(CPPFLAGS) $(WARNINGS) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer \
 		$(SRC) $(TEST_SRC) -o $(BUILD)/run_tests_asan
 	./$(BUILD)/run_tests_asan
+
+# The software signer in ports/mbedtls (needs mbedTLS; on macOS: brew install mbedtls).
+MBEDTLS_PREFIX ?= $(shell brew --prefix mbedtls 2>/dev/null)
+MBEDTLS_CFLAGS ?= $(if $(MBEDTLS_PREFIX),-I$(MBEDTLS_PREFIX)/include)
+MBEDTLS_LIBS ?= $(if $(MBEDTLS_PREFIX),-L$(MBEDTLS_PREFIX)/lib) -lmbedcrypto
+
+test-mbedtls: | $(BUILD)
+	$(CC) $(CPPFLAGS) $(MBEDTLS_CFLAGS) $(WARNINGS) $(CFLAGS) $(SRC) ports/mbedtls/trp_mbedtls_signer.c \
+		tests/port_mbedtls.c $(MBEDTLS_LIBS) -o $(BUILD)/run_tests_mbedtls
+	./$(BUILD)/run_tests_mbedtls
 
 $(BUILD):
 	mkdir -p $(BUILD)
