@@ -18,3 +18,12 @@ jobs:
       - name: Sanitizers
         if: matrix.cc == 'clang'
         run: make asan CC=clang
+
+  conformance:
+    # The official tempoxyz/mpp-tools runner, pinned in scripts/conformance.sh.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: mpp-tools conformance vectors
+        run: sh scripts/conformance.sh

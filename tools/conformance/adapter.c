@@ -13,6 +13,8 @@
  * This is a host tool, so unlike the library it allocates freely.
  */
 
+#define _POSIX_C_SOURCE 200809L /* strncasecmp under -std=c99 on glibc */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
