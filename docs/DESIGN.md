@@ -6,7 +6,7 @@ This document records what the specs require and how the library maps onto them.
 
 ## Goals
 
-- **Pay MPP `charge` challenges from a microcontroller**, first on ESP32-S3 under ESP-IDF.
+- **Pay MPP `charge` challenges from a microcontroller**, first on an ESP32 with the ESP32-WROOM-32SE module (ATECC608A built in) under ESP-IDF.
 - **Keys stay in hardware.** The signing key lives in a secure element (Microchip ATECC608A first) and is non-exportable. Tempo verifies P-256 signatures natively, which is what makes this possible: an Ethereum-style chain would need secp256k1, which these chips don't offer.
 - **The owner sets the limits, the chain enforces them.** The device key is a Tempo access key with a spending limit, a token and an expiry. A stolen device can spend at most what is left on its key, and the owner can revoke it.
 - **No heap.** Every function writes into caller-owned buffers. Nothing allocates.

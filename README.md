@@ -18,7 +18,7 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 - [x] MPP core: challenge parsing, `request` decoding, credential encoding, checked against the [tempoxyz/mpp-tools](https://github.com/tempoxyz/mpp-tools) conformance vectors
 - [ ] Tempo `charge`: 0x76 transaction, P-256 and Keychain signatures
 - [ ] Signers: software P-256 (mbedTLS) and ATECC608A
-- [ ] ESP-IDF example: an ESP32-S3 pays a live MPP endpoint on Tempo testnet
+- [ ] ESP-IDF example: an ESP32-WROOM-32SE (ATECC608A built in) pays a live MPP endpoint on Tempo testnet
 - [ ] A harness adapter so the mpp-tools conformance runner can test Transponder directly, in CI
 
 The design, including the transaction layout and signing rules, is in [docs/DESIGN.md](docs/DESIGN.md).
