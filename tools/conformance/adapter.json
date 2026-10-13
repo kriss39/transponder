@@ -1,0 +1,27 @@
+{
+  "$schema": "../../schemas/adapter-manifest.schema.json",
+  "schema": 1,
+  "name": "transponder",
+  "language": "c",
+  "command": [
+    "./trp-conformance-adapter"
+  ],
+  "build": [
+    "make",
+    "-C",
+    "transponder",
+    "conformance-adapter"
+  ],
+  "cwd": ".",
+  "capabilities": [
+    "challenge.parse",
+    "challenge.format",
+    "challenge.id",
+    "credential.parse",
+    "credential.format",
+    "receipt.parse",
+    "receipt.format",
+    "base64url.encode",
+    "base64url.decode"
+  ]
+}

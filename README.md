@@ -22,7 +22,7 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 - [ ] ATECC608A signer
 - [x] A first payment on Tempo testnet from a computer, through a stock mppx server
 - [ ] ESP-IDF example: an ESP32-WROOM-32SE (ATECC608A built in) pays a live MPP endpoint on Tempo testnet
-- [ ] A harness adapter so the mpp-tools conformance runner can test Transponder directly, in CI
+- [x] Passes the official [tempoxyz/mpp-tools](https://github.com/tempoxyz/mpp-tools) conformance runner: 121/121 vector checks, through the adapter in [`tools/conformance`](tools/conformance)
 
 The design, including the transaction layout and signing rules, is in [docs/DESIGN.md](docs/DESIGN.md).
 

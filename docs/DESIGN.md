@@ -56,7 +56,8 @@ The device uses **pull mode**: it signs and the server broadcasts. That keeps th
 | Signers | ATECC608A through cryptoauthlib | |
 | Platform | host demo with libcurl (`examples/host-pay`) | done, paid on Moderato |
 | Platform | ESP-IDF: HTTP client, time, JSON-RPC calls | |
-| Conformance | mpp-tools adapter (JSON ABI described in `HARNESS_SPEC.md`) | |
+| MPP core | `Payment-Receipt` parser | done |
+| Conformance | mpp-tools adapter (JSON ABI described in `HARNESS_SPEC.md`) | done, 121/121 on the official runner |
 
 ## Tempo transaction (type 0x76)
 

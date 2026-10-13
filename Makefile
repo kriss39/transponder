@@ -10,7 +10,7 @@ SRC = $(wildcard src/*.c)
 TEST_SRC = $(filter-out tests/port_%.c,$(wildcard tests/*.c))
 BUILD = build
 
-.PHONY: all test asan test-mbedtls pay pay-enclave enclave-key clean
+.PHONY: all test asan test-mbedtls pay pay-enclave enclave-key conformance-adapter clean
 
 all: $(BUILD)/libtransponder.a
 
@@ -63,6 +63,11 @@ pay-enclave: | $(BUILD)
 		$(CFLAGS) -DTRP_WITH_ENCLAVE -c \
 		$(addprefix ../../,$(SRC) $(ENCLAVE_C) ports/mbedtls/trp_mbedtls_signer.c examples/host-pay/pay.c)
 	swiftc -O -parse-as-library $(ENCLAVE_SWIFT) $(BUILD)/pay-enclave.o.d/*.o $(MBEDTLS_LIBS) -lcurl -o $(BUILD)/pay
+
+# Adapter for the tempoxyz/mpp-tools conformance runner (see tools/conformance).
+conformance-adapter: | $(BUILD)
+	$(CC) $(CPPFLAGS) $(WARNINGS) -Wno-conversion $(CFLAGS) $(SRC) tools/conformance/adapter.c \
+		-o $(BUILD)/trp-conformance-adapter
 
 $(BUILD):
 	mkdir -p $(BUILD)

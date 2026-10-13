@@ -3,6 +3,7 @@
 #include "transponder/base64url.h"
 #include "transponder/challenge.h"
 #include "transponder/credential.h"
+#include "transponder/receipt.h"
 #include "conformance_vectors.h"
 
 static char wire_buf[32 * 1024];
@@ -204,8 +205,29 @@ static void test_credential_conformance(void)
     }
 }
 
+static void test_receipts(void)
+{
+    size_t i;
+
+    for (i = 0; i < sizeof(RECEIPT_VECTORS) / sizeof(RECEIPT_VECTORS[0]); i++) {
+        const receipt_vector *v = &RECEIPT_VECTORS[i];
+        trp_receipt r;
+        trp_err_t err = trp_receipt_parse(v->wire, strlen(v->wire), &r, scratch, sizeof(scratch));
+        int ok = v->ok ? (err == TRP_OK && str_matches(r.status, v->status) &&
+                          str_matches(r.method, v->method) && str_matches(r.timestamp, v->timestamp) &&
+                          str_matches(r.reference, v->reference))
+                       : err != TRP_OK;
+        trp_test_checks++;
+        if (!ok) {
+            trp_test_failures++;
+            printf("  FAIL conformance receipt/%s (err %d)\n", v->name, (int)err);
+        }
+    }
+}
+
 void test_challenge(void)
 {
+    test_receipts();
     test_conformance();
     test_extra_cases();
     test_roundtrip();

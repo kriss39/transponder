@@ -154,4 +154,21 @@ static const b64_vector B64_VECTORS[] = {
     {"invalid_utf8_rejected", NULL, "_w", 0},
 };
 
+typedef struct {
+    const char *name, *wire;
+    int ok;
+    const char *status, *method, *timestamp, *reference;
+} receipt_vector;
+
+static const receipt_vector RECEIPT_VECTORS[] = {
+    {"success_receipt", "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IjIwMjYtMDEtMjlUMTI6MDA6MzBaIn0", 1, "success", "tempo", "2026-01-29T12:00:30Z", "0xabcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890ab"},
+    {"error_invalid_base64url", "not-valid-base64!!!", 0, NULL, NULL, NULL, NULL},
+    {"error_invalid_json", "bm90IGpzb24", 0, NULL, NULL, NULL, NULL},
+    {"error_missing_status", "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwidGltZXN0YW1wIjoiMjAyNi0wMS0yOVQxMjowMDozMFoifQ", 0, NULL, NULL, NULL, NULL},
+    {"error_missing_method", "eyJyZWZlcmVuY2UiOiIweGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYiIsInN0YXR1cyI6InN1Y2Nlc3MiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTI5VDEyOjAwOjMwWiJ9", 0, NULL, NULL, NULL, NULL},
+    {"error_missing_reference", "eyJtZXRob2QiOiJ0ZW1wbyIsInN0YXR1cyI6InN1Y2Nlc3MiLCJ0aW1lc3RhbXAiOiIyMDI2LTAxLTI5VDEyOjAwOjMwWiJ9", 0, NULL, NULL, NULL, NULL},
+    {"error_missing_timestamp", "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyJ9", 0, NULL, NULL, NULL, NULL},
+    {"error_non_iso8601_timestamp", "eyJtZXRob2QiOiJ0ZW1wbyIsInJlZmVyZW5jZSI6IjB4YWJjZGVmMTIzNDU2Nzg5MGFiY2RlZjEyMzQ1Njc4OTBhYmNkZWYxMjM0NTY3ODkwYWJjZGVmMTIzNDU2Nzg5MGFiIiwic3RhdHVzIjoic3VjY2VzcyIsInRpbWVzdGFtcCI6IkphbiAyOSAyMDI2IDEyOjAwIn0", 0, NULL, NULL, NULL, NULL},
+};
+
 #endif
