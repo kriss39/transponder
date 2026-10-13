@@ -33,7 +33,7 @@ function page(origin, env) {
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Transponder demo</title>
+<title>Transponder Telemetry</title>
 <style>
   :root { color-scheme: light dark; --fg: #1b1b1f; --bg: #fafaf7; --muted: #5d5d66; --line: #e2e2dc; --code: #f0f0ea; }
   @media (prefers-color-scheme: dark) { :root { --fg: #ececf0; --bg: #141416; --muted: #a0a0aa; --line: #2c2c31; --code: #1e1e22; } }
@@ -51,8 +51,8 @@ function page(origin, env) {
 </head>
 <body>
 <main>
-  <h1>Transponder demo</h1>
-  <p class="lead">A paid API on Tempo testnet for machines. Each reading costs ${escape(env.PRICE)} AlphaUSD, paid over the Machine Payments Protocol (HTTP 402).</p>
+  <h1>Transponder Telemetry</h1>
+  <p class="lead">A sensor feed that machines pay for, on Tempo testnet. Each reading costs ${escape(env.PRICE)} AlphaUSD, paid over the Machine Payments Protocol (HTTP 402).</p>
 
   <dl>
     <dt>Endpoint</dt><dd><code>GET ${escape(url)}</code></dd>

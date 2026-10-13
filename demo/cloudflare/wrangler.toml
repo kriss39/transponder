@@ -1,5 +1,5 @@
-# Transponder demo: a paid "sensor reading" on Tempo testnet (Moderato).
-name = "transponder-demo"
+# Transponder Telemetry: a paid "sensor reading" on Tempo testnet (Moderato).
+name = "telemetry"
 main = "src/index.js"
 compatibility_date = "2026-09-01"
 compatibility_flags = ["nodejs_compat"]

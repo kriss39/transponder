@@ -1,5 +1,5 @@
 {
-  "name": "transponder-demo",
+  "name": "transponder-telemetry",
   "private": true,
   "type": "module",
   "description": "A public MPP service on Tempo testnet that Transponder devices can pay. Cloudflare Worker built with mppx.",

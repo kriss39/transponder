@@ -1,4 +1,4 @@
-# Transponder demo on Cloudflare Workers
+# Transponder Telemetry on Cloudflare Workers
 
 A public MPP service on Tempo testnet that Transponder devices (or any MPP client) can pay: `GET /reading` costs 0.01 AlphaUSD on Moderato. Built with mppx, the reference SDK.
 
@@ -7,9 +7,20 @@ npm install
 printf 'MPP_SECRET_KEY=%s\n' "$(openssl rand -hex 32)" > .dev.vars
 npm run dev                       # http://127.0.0.1:8787, no Cloudflare account needed
 
-npx wrangler login                # once, with your Cloudflare account
-npx wrangler secret put MPP_SECRET_KEY
-npm run deploy
+```
+
+To deploy to a Cloudflare account other than the one `wrangler login` remembers, give this folder its own API token (template "Edit Cloudflare Workers") in `.env.deploy`, which is git-ignored:
+
+```sh
+# .env.deploy
+CLOUDFLARE_API_TOKEN=...
+CLOUDFLARE_ACCOUNT_ID=...
+```
+
+```sh
+set -a; . ./.env.deploy; set +a
+printf 'MPP_SECRET_KEY=%s\n' "$(openssl rand -hex 32)" > /tmp/secrets.env
+npx wrangler deploy --secrets-file /tmp/secrets.env && rm /tmp/secrets.env
 ```
 
 Notes:
