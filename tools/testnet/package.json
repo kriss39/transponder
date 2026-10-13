@@ -1,0 +1,10 @@
+{
+  "name": "transponder-testnet",
+  "private": true,
+  "type": "module",
+  "description": "Moderato testnet harness: throwaway accounts, an access key for the device key, and a local mppx server to pay.",
+  "dependencies": {
+    "mppx": "0.13.4",
+    "viem": "2.57.5"
+  }
+}

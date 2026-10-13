@@ -10,7 +10,7 @@ SRC = $(wildcard src/*.c)
 TEST_SRC = $(filter-out tests/port_%.c,$(wildcard tests/*.c))
 BUILD = build
 
-.PHONY: all test asan test-mbedtls clean
+.PHONY: all test asan test-mbedtls pay clean
 
 all: $(BUILD)/libtransponder.a
 
@@ -41,6 +41,11 @@ test-mbedtls: | $(BUILD)
 	$(CC) $(CPPFLAGS) $(MBEDTLS_CFLAGS) $(WARNINGS) $(CFLAGS) $(SRC) ports/mbedtls/trp_mbedtls_signer.c \
 		tests/port_mbedtls.c $(MBEDTLS_LIBS) -o $(BUILD)/run_tests_mbedtls
 	./$(BUILD)/run_tests_mbedtls
+
+# Host demo: pay an MPP endpoint from this computer (see examples/host-pay/pay.c).
+pay: | $(BUILD)
+	$(CC) $(CPPFLAGS) $(MBEDTLS_CFLAGS) $(WARNINGS) -Wno-conversion $(CFLAGS) $(SRC) \
+		ports/mbedtls/trp_mbedtls_signer.c examples/host-pay/pay.c $(MBEDTLS_LIBS) -lcurl -o $(BUILD)/pay
 
 $(BUILD):
 	mkdir -p $(BUILD)
