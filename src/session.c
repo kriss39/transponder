@@ -1,0 +1,537 @@
+#include "transponder/session.h"
+
+#include <string.h>
+
+#include "transponder/credential.h"
+#include "transponder/json.h"
+#include "transponder/keccak.h"
+#include "internal.h"
+
+const uint8_t TRP_CHANNEL_ESCROW[TRP_ADDRESS_LEN] = {0x4d, 0x50, 0x50};
+
+#define DEFAULT_SESSION_CHAIN TRP_TEMPO_MAINNET /* the session spec's default */
+#define OPEN_CALLDATA_LEN (4 + 6 * 32)
+#define TOP_UP_CALLDATA_LEN (4 + 8 * 32)
+
+/* ---- ABI words and hashing ------------------------------------------------ */
+
+static void word_address(uint8_t w[32], const uint8_t a[TRP_ADDRESS_LEN])
+{
+    memset(w, 0, 12);
+    memcpy(w + 12, a, TRP_ADDRESS_LEN);
+}
+
+static void word_u64(uint8_t w[32], uint64_t v)
+{
+    int i;
+    memset(w, 0, 24);
+    for (i = 0; i < 8; i++) w[31 - i] = (uint8_t)(v >> (8 * i));
+}
+
+static void hash_address(trp_keccak_ctx *c, const uint8_t a[TRP_ADDRESS_LEN])
+{
+    uint8_t w[32];
+    word_address(w, a);
+    trp_keccak256_update(c, w, 32);
+}
+
+static void hash_u64(trp_keccak_ctx *c, uint64_t v)
+{
+    uint8_t w[32];
+    word_u64(w, v);
+    trp_keccak256_update(c, w, 32);
+}
+
+static void keccak_text(const char *s, uint8_t out[32])
+{
+    trp_keccak256((const uint8_t *)s, strlen(s), out);
+}
+
+/* A uint96 has its top 160 bits clear. */
+static int fits_u96(const uint8_t a[TRP_U256_LEN])
+{
+    return trp__is_zero(a, TRP_U256_LEN - 12);
+}
+
+void trp_channel_id(const trp_channel_descriptor *d, const uint8_t escrow[TRP_ADDRESS_LEN],
+                    uint64_t chain_id, uint8_t out[32])
+{
+    trp_keccak_ctx c;
+
+    trp_keccak256_init(&c);
+    hash_address(&c, d->payer);
+    hash_address(&c, d->payee);
+    hash_address(&c, d->operator_);
+    hash_address(&c, d->token);
+    trp_keccak256_update(&c, d->salt, 32);
+    hash_address(&c, d->authorized_signer);
+    trp_keccak256_update(&c, d->expiring_nonce_hash, 32);
+    hash_address(&c, escrow);
+    hash_u64(&c, chain_id);
+    trp_keccak256_final(&c, out);
+}
+
+static void domain_separator(uint64_t chain_id, const uint8_t escrow[TRP_ADDRESS_LEN], uint8_t out[32])
+{
+    uint8_t h[32];
+    trp_keccak_ctx c;
+
+    trp_keccak256_init(&c);
+    keccak_text("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)", h);
+    trp_keccak256_update(&c, h, 32);
+    keccak_text("TIP20 Channel Reserve", h);
+    trp_keccak256_update(&c, h, 32);
+    keccak_text("1", h);
+    trp_keccak256_update(&c, h, 32);
+    hash_u64(&c, chain_id);
+    hash_address(&c, escrow);
+    trp_keccak256_final(&c, out);
+}
+
+static trp_err_t typed_digest(const char *type, uint64_t chain_id, const uint8_t escrow[TRP_ADDRESS_LEN],
+                              const uint8_t channel_id[32], const uint8_t amount[TRP_U256_LEN],
+                              uint8_t out[32])
+{
+    static const uint8_t PREFIX[2] = {0x19, 0x01};
+    uint8_t typehash[32], struct_hash[32], domain[32];
+    trp_keccak_ctx c;
+
+    if (!fits_u96(amount)) return TRP_ERR_INVALID;
+    keccak_text(type, typehash);
+    trp_keccak256_init(&c);
+    trp_keccak256_update(&c, typehash, 32);
+    trp_keccak256_update(&c, channel_id, 32);
+    trp_keccak256_update(&c, amount, 32);
+    trp_keccak256_final(&c, struct_hash);
+    domain_separator(chain_id, escrow, domain);
+    trp_keccak256_init(&c);
+    trp_keccak256_update(&c, PREFIX, 2);
+    trp_keccak256_update(&c, domain, 32);
+    trp_keccak256_update(&c, struct_hash, 32);
+    trp_keccak256_final(&c, out);
+    return TRP_OK;
+}
+
+trp_err_t trp_voucher_digest(uint64_t chain_id, const uint8_t escrow[TRP_ADDRESS_LEN],
+                             const uint8_t channel_id[32], const uint8_t amount[TRP_U256_LEN],
+                             uint8_t out[32])
+{
+    return typed_digest("Voucher(bytes32 channelId,uint96 cumulativeAmount)", chain_id, escrow,
+                        channel_id, amount, out);
+}
+
+trp_err_t trp_close_authorization_digest(uint64_t chain_id, const uint8_t escrow[TRP_ADDRESS_LEN],
+                                         const uint8_t channel_id[32],
+                                         const uint8_t amount[TRP_U256_LEN], uint8_t out[32])
+{
+    return typed_digest("CloseAuthorization(bytes32 channelId,uint96 cumulativeAmount)", chain_id,
+                        escrow, channel_id, amount, out);
+}
+
+/* open(address payee, address operator, address token, uint96 deposit, bytes32 salt, address authorizedSigner) */
+static void open_calldata(const trp_channel_descriptor *d, const uint8_t deposit[TRP_U256_LEN],
+                          uint8_t out[OPEN_CALLDATA_LEN])
+{
+    static const uint8_t SELECTOR[4] = {0xed, 0xc5, 0x3b, 0x00};
+
+    memcpy(out, SELECTOR, 4);
+    word_address(out + 4, d->payee);
+    word_address(out + 36, d->operator_);
+    word_address(out + 68, d->token);
+    memcpy(out + 100, deposit, 32);
+    memcpy(out + 132, d->salt, 32);
+    word_address(out + 164, d->authorized_signer);
+}
+
+/* topUp((address,address,address,address,bytes32,address,bytes32) descriptor, uint96 additionalDeposit) */
+static void top_up_calldata(const trp_channel_descriptor *d, const uint8_t additional[TRP_U256_LEN],
+                            uint8_t out[TOP_UP_CALLDATA_LEN])
+{
+    static const uint8_t SELECTOR[4] = {0xdc, 0x48, 0x47, 0x1e};
+
+    memcpy(out, SELECTOR, 4);
+    word_address(out + 4, d->payer);
+    word_address(out + 36, d->payee);
+    word_address(out + 68, d->operator_);
+    word_address(out + 100, d->token);
+    memcpy(out + 132, d->salt, 32);
+    word_address(out + 164, d->authorized_signer);
+    memcpy(out + 196, d->expiring_nonce_hash, 32);
+    memcpy(out + 228, additional, 32);
+}
+
+/* ---- the request ---------------------------------------------------------- */
+
+trp_err_t trp_session_request_parse(const trp_challenge *ch, trp_session_request *r)
+{
+    const trp_json *req = &ch->request_json;
+    trp_json details, v;
+    char protocol[8];
+    size_t n;
+    trp_err_t err;
+
+    memset(r, 0, sizeof(*r));
+    r->chain_id = DEFAULT_SESSION_CHAIN;
+    if (!trp__str_eq(ch->method, "tempo") || !trp__str_eq(ch->intent, "session")) return TRP_ERR_UNSUPPORTED;
+    if (req->type != TRP_JSON_OBJECT) return TRP_ERR_INVALID;
+
+    if (trp__json_u256(req, "amount", r->price) != TRP_OK) return TRP_ERR_INVALID;
+    err = trp__json_u256(req, "suggestedDeposit", r->suggested_deposit);
+    if (err == TRP_OK) r->has_suggested_deposit = 1;
+    else if (err != TRP_ERR_NOT_FOUND) return TRP_ERR_INVALID;
+    if (trp__json_hex(req, "currency", r->currency, TRP_ADDRESS_LEN) != TRP_OK) return TRP_ERR_INVALID;
+    if (trp__json_hex(req, "recipient", r->recipient, TRP_ADDRESS_LEN) != TRP_OK) return TRP_ERR_INVALID;
+    if (ch->expires.ptr && trp_parse_rfc3339(ch->expires.ptr, ch->expires.len, &r->expires) != TRP_OK)
+        return TRP_ERR_INVALID;
+
+    /* methodDetails carries the escrow, which is required. */
+    if (trp_json_get(req, "methodDetails", &details) != TRP_OK || details.type != TRP_JSON_OBJECT)
+        return TRP_ERR_INVALID;
+    err = trp__json_string(&details, "sessionProtocol", protocol, sizeof(protocol), &n);
+    if (err == TRP_ERR_NOT_FOUND) return TRP_ERR_UNSUPPORTED; /* absent means v1 */
+    if (err != TRP_OK) return TRP_ERR_INVALID;
+    if (n != 2 || memcmp(protocol, "v2", 2) != 0) return TRP_ERR_UNSUPPORTED;
+    if (trp__json_hex(&details, "escrowContract", r->escrow, TRP_ADDRESS_LEN) != TRP_OK) return TRP_ERR_INVALID;
+
+    err = trp_json_get(&details, "chainId", &v);
+    if (err == TRP_OK) {
+        if (trp_json_get_uint64(&v, &r->chain_id) != TRP_OK || r->chain_id == 0) return TRP_ERR_INVALID;
+    } else if (err != TRP_ERR_NOT_FOUND) {
+        return err;
+    }
+    err = trp__json_hex(&details, "operator", r->operator_, TRP_ADDRESS_LEN);
+    if (err != TRP_OK && err != TRP_ERR_NOT_FOUND) return TRP_ERR_INVALID;
+    err = trp_json_get(&details, "feePayer", &v);
+    if (err == TRP_OK) {
+        if (trp_json_get_bool(&v, &r->fee_payer) != TRP_OK) return TRP_ERR_INVALID;
+    } else if (err != TRP_ERR_NOT_FOUND) {
+        return err;
+    }
+    return TRP_OK;
+}
+
+/* The policy speaks in charge terms: an amount to a recipient, in a token, on a chain. */
+static trp_err_t check_policy(const trp_spend_policy *policy, const trp_session_request *r,
+                              const uint8_t amount[TRP_U256_LEN])
+{
+    trp_charge_request as_charge;
+
+    memset(&as_charge, 0, sizeof(as_charge));
+    memcpy(as_charge.amount, amount, TRP_U256_LEN);
+    memcpy(as_charge.currency, r->currency, TRP_ADDRESS_LEN);
+    memcpy(as_charge.recipient, r->recipient, TRP_ADDRESS_LEN);
+    as_charge.chain_id = r->chain_id;
+    return trp_spend_policy_check(policy, &as_charge);
+}
+
+/* ---- credentials ---------------------------------------------------------- */
+
+static void jw_descriptor(trp_json_writer *w, const trp_channel_descriptor *d)
+{
+    trp_jw_object_begin(w);
+    trp_jw_key(w, "authorizedSigner");
+    trp__jw_address(w, d->authorized_signer);
+    trp_jw_key(w, "expiringNonceHash");
+    trp__jw_hex(w, d->expiring_nonce_hash, 32);
+    trp_jw_key(w, "operator");
+    trp__jw_address(w, d->operator_);
+    trp_jw_key(w, "payee");
+    trp__jw_address(w, d->payee);
+    trp_jw_key(w, "payer");
+    trp__jw_address(w, d->payer);
+    trp_jw_key(w, "salt");
+    trp__jw_hex(w, d->salt, 32);
+    trp_jw_key(w, "token");
+    trp__jw_address(w, d->token);
+    trp_jw_object_end(w);
+}
+
+/* Room for one transaction: its RLP, its envelope and the payload JSON around them. */
+typedef struct {
+    uint8_t *calldata, *rlp, *envelope;
+    char *payload, *scratch;
+    size_t rlp_cap, envelope_cap, payload_cap, scratch_cap;
+} buffers;
+
+static trp_err_t carve(uint8_t *work, size_t work_cap, size_t calldata_len, buffers *b)
+{
+    trp__carver c;
+
+    b->rlp_cap = 200 + calldata_len;
+    b->envelope_cap = b->rlp_cap + 1 + TRP_ADDRESS_LEN + TRP_P256_SIGNATURE_LEN + 8;
+    b->payload_cap = 2 * b->envelope_cap + 2 * TRP_P256_SIGNATURE_LEN + 1024; /* hex, signatures, descriptor */
+    c.p = work;
+    c.left = work_cap;
+    b->calldata = (uint8_t *)trp__take(&c, calldata_len ? calldata_len : 1);
+    b->rlp = (uint8_t *)trp__take(&c, b->rlp_cap);
+    b->envelope = (uint8_t *)trp__take(&c, b->envelope_cap);
+    b->payload = (char *)trp__take(&c, b->payload_cap);
+    if (!b->calldata || !b->rlp || !b->envelope || !b->payload) return TRP_ERR_BUFFER;
+    b->scratch = (char *)c.p;
+    b->scratch_cap = c.left;
+    return TRP_OK;
+}
+
+static trp_err_t finish(const trp_challenge *ch, const trp_session *s, trp_json_writer *w,
+                        buffers *b, char *out, size_t out_cap)
+{
+    char source[TRP__DID_MAX];
+    trp_err_t err;
+
+    if ((err = trp_jw_finish(w)) != TRP_OK) return err;
+    trp__did_pkh(s->chain_id, s->descriptor.payer, source);
+    return trp_credential_encode(ch, b->payload, w->len, source, out, out_cap, b->scratch, b->scratch_cap);
+}
+
+static trp_err_t check_options(const trp_charge_options *opt)
+{
+    if (!opt || !opt->owner || !opt->signer || !opt->signer->sign_digest || !opt->policy ||
+        opt->now == 0 || opt->now > UINT64_MAX - TRP_CHARGE_MAX_VALIDITY || opt->gas_limit == 0)
+        return TRP_ERR_INVALID;
+    return TRP_OK;
+}
+
+/* A transaction with one call into the escrow, signed by the access key. */
+static trp_err_t sign_escrow_call(const trp_challenge *ch, const trp_charge_options *opt,
+                                  const trp_session_request *r, const uint8_t fee_token[TRP_ADDRESS_LEN],
+                                  const uint8_t *calldata, size_t calldata_len, buffers *b,
+                                  trp_tempo_tx *tx, trp_tempo_call *call, size_t *envelope_len)
+{
+    uint64_t valid_before;
+    trp_err_t err;
+
+    if (!r->fee_payer && opt->max_fee_per_gas == 0) return TRP_ERR_INVALID;
+    if ((err = trp__valid_before(ch, opt->now, &valid_before)) != TRP_OK) return err;
+    if (opt->valid_after >= valid_before) return TRP_ERR_INVALID;
+
+    call->to = r->escrow;
+    call->data = calldata;
+    call->data_len = calldata_len;
+    memset(tx, 0, sizeof(*tx));
+    tx->chain_id = r->chain_id;
+    tx->max_priority_fee_per_gas = opt->max_priority_fee_per_gas;
+    tx->max_fee_per_gas = opt->max_fee_per_gas;
+    tx->gas_limit = opt->gas_limit;
+    tx->calls = call;
+    tx->call_count = 1;
+    tx->valid_before = valid_before;
+    tx->valid_after = opt->valid_after;
+    tx->fee_payer = r->fee_payer;
+    /* Like mppx, channel transactions pay their fee in the channel's token by default. */
+    tx->fee_token = r->fee_payer ? NULL : (opt->fee_token ? opt->fee_token : fee_token);
+    return trp__keychain_sign_tx(tx, opt->owner, opt->signer, b->rlp, b->rlp_cap, b->envelope,
+                                 b->envelope_cap, envelope_len);
+}
+
+/* A session challenge for the same channel terms as `s`. */
+static trp_err_t match_challenge(const trp_challenge *ch, const trp_session *s, trp_session_request *r)
+{
+    trp_err_t err = trp_session_request_parse(ch, r);
+
+    if (err != TRP_OK) return err;
+    if (r->chain_id != s->chain_id || memcmp(r->escrow, s->escrow, TRP_ADDRESS_LEN) != 0 ||
+        memcmp(r->currency, s->descriptor.token, TRP_ADDRESS_LEN) != 0 ||
+        memcmp(r->recipient, s->descriptor.payee, TRP_ADDRESS_LEN) != 0)
+        return TRP_ERR_INVALID;
+    return TRP_OK;
+}
+
+/* ---- actions --------------------------------------------------------------- */
+
+trp_err_t trp_session_open(const trp_challenge *ch, const trp_charge_options *opt,
+                           const uint8_t deposit[TRP_U256_LEN], const uint8_t salt[32],
+                           trp_session *s, char *out, size_t out_cap, uint8_t *work, size_t work_cap)
+{
+    static const uint8_t ZERO[TRP_U256_LEN] = {0};
+    trp_session_request r;
+    trp_session next;
+    buffers b;
+    trp_tempo_tx tx;
+    trp_tempo_call call;
+    trp_json_writer w;
+    uint8_t digest[32], voucher[TRP_P256_SIGNATURE_LEN];
+    size_t envelope_len;
+    trp_err_t err;
+
+    if (!ch || !s || (err = check_options(opt)) != TRP_OK) return TRP_ERR_INVALID;
+    if ((err = trp_session_request_parse(ch, &r)) != TRP_OK) return err;
+    /* Only the precompile escrow: a server cannot route the deposit elsewhere. */
+    if (memcmp(r.escrow, TRP_CHANNEL_ESCROW, TRP_ADDRESS_LEN) != 0) return TRP_ERR_UNSUPPORTED;
+    if (trp__is_zero(deposit, TRP_U256_LEN) || !fits_u96(deposit) || memcmp(deposit, r.price, 32) < 0)
+        return TRP_ERR_INVALID;
+    if ((err = check_policy(opt->policy, &r, deposit)) != TRP_OK) return err;
+    if ((err = carve(work, work_cap, OPEN_CALLDATA_LEN, &b)) != TRP_OK) return err;
+
+    memset(&next, 0, sizeof(next));
+    memcpy(next.descriptor.payer, opt->owner, TRP_ADDRESS_LEN);
+    memcpy(next.descriptor.payee, r.recipient, TRP_ADDRESS_LEN);
+    memcpy(next.descriptor.operator_, r.operator_, TRP_ADDRESS_LEN);
+    memcpy(next.descriptor.token, r.currency, TRP_ADDRESS_LEN);
+    memcpy(next.descriptor.salt, salt, 32);
+    trp_p256_address(opt->signer->public_key, next.descriptor.authorized_signer);
+    memcpy(next.escrow, r.escrow, TRP_ADDRESS_LEN);
+    next.chain_id = r.chain_id;
+    memcpy(next.deposit, deposit, TRP_U256_LEN);
+
+    open_calldata(&next.descriptor, deposit, b.calldata);
+    if ((err = sign_escrow_call(ch, opt, &r, r.currency, b.calldata, OPEN_CALLDATA_LEN, &b, &tx, &call,
+                                &envelope_len)) != TRP_OK)
+        return err;
+    /* The channel ID commits to the open transaction through its expiring-nonce hash. */
+    if ((err = trp_tempo_expiring_nonce_hash(&tx, opt->owner, b.rlp, b.rlp_cap,
+                                             next.descriptor.expiring_nonce_hash)) != TRP_OK)
+        return err;
+    trp_channel_id(&next.descriptor, next.escrow, next.chain_id, next.channel_id);
+
+    /* The initial zero voucher proves the authorized signer is live. */
+    if ((err = trp_voucher_digest(next.chain_id, next.escrow, next.channel_id, ZERO, digest)) != TRP_OK) return err;
+    if ((err = trp__sign_p256(opt->signer, digest, voucher)) != TRP_OK) return err;
+
+    /* Fields in mppx's order. */
+    trp_jw_init(&w, b.payload, b.payload_cap);
+    trp_jw_object_begin(&w);
+    trp_jw_key(&w, "action");
+    trp_jw_string(&w, "open", 4);
+    trp_jw_key(&w, "type");
+    trp_jw_string(&w, "transaction", 11);
+    trp_jw_key(&w, "channelId");
+    trp__jw_hex(&w, next.channel_id, 32);
+    trp_jw_key(&w, "transaction");
+    trp__jw_hex(&w, b.envelope, envelope_len);
+    trp_jw_key(&w, "signature");
+    trp__jw_hex(&w, voucher, sizeof(voucher));
+    trp_jw_key(&w, "descriptor");
+    jw_descriptor(&w, &next.descriptor);
+    trp_jw_key(&w, "cumulativeAmount");
+    trp_jw_string(&w, "0", 1);
+    trp_jw_key(&w, "authorizedSigner");
+    trp__jw_address(&w, next.descriptor.authorized_signer);
+    trp_jw_object_end(&w);
+    if ((err = finish(ch, &next, &w, &b, out, out_cap)) != TRP_OK) return err;
+    *s = next;
+    return TRP_OK;
+}
+
+trp_err_t trp_session_voucher(trp_session *s, const trp_challenge *ch, const trp_signer *signer,
+                              const uint8_t cumulative[TRP_U256_LEN], char *out, size_t out_cap,
+                              uint8_t *work, size_t work_cap)
+{
+    trp_session_request r;
+    buffers b;
+    trp_json_writer w;
+    uint8_t digest[32], voucher[TRP_P256_SIGNATURE_LEN];
+    trp_err_t err;
+
+    if (!s || !ch || !signer || !signer->sign_digest) return TRP_ERR_INVALID;
+    if ((err = match_challenge(ch, s, &r)) != TRP_OK) return err;
+    /* Cumulative: never down, never past what is deposited. */
+    if (memcmp(cumulative, s->cumulative, 32) < 0 || memcmp(cumulative, s->deposit, 32) > 0) return TRP_ERR_INVALID;
+    if ((err = carve(work, work_cap, 0, &b)) != TRP_OK) return err;
+    if ((err = trp_voucher_digest(s->chain_id, s->escrow, s->channel_id, cumulative, digest)) != TRP_OK) return err;
+    if ((err = trp__sign_p256(signer, digest, voucher)) != TRP_OK) return err;
+
+    trp_jw_init(&w, b.payload, b.payload_cap);
+    trp_jw_object_begin(&w);
+    trp_jw_key(&w, "action");
+    trp_jw_string(&w, "voucher", 7);
+    trp_jw_key(&w, "channelId");
+    trp__jw_hex(&w, s->channel_id, 32);
+    trp_jw_key(&w, "descriptor");
+    jw_descriptor(&w, &s->descriptor);
+    trp_jw_key(&w, "cumulativeAmount");
+    trp__jw_decimal(&w, cumulative);
+    trp_jw_key(&w, "signature");
+    trp__jw_hex(&w, voucher, sizeof(voucher));
+    trp_jw_object_end(&w);
+    if ((err = finish(ch, s, &w, &b, out, out_cap)) != TRP_OK) return err;
+    memcpy(s->cumulative, cumulative, TRP_U256_LEN);
+    return TRP_OK;
+}
+
+trp_err_t trp_session_top_up(trp_session *s, const trp_challenge *ch, const trp_charge_options *opt,
+                             const uint8_t additional[TRP_U256_LEN], char *out, size_t out_cap,
+                             uint8_t *work, size_t work_cap)
+{
+    trp_session_request r;
+    buffers b;
+    trp_tempo_tx tx;
+    trp_tempo_call call;
+    trp_json_writer w;
+    uint8_t total[TRP_U256_LEN];
+    size_t envelope_len;
+    unsigned carry = 0;
+    int i;
+    trp_err_t err;
+
+    if (!s || !ch || (err = check_options(opt)) != TRP_OK) return TRP_ERR_INVALID;
+    if (memcmp(opt->owner, s->descriptor.payer, TRP_ADDRESS_LEN) != 0) return TRP_ERR_INVALID;
+    if ((err = match_challenge(ch, s, &r)) != TRP_OK) return err;
+    for (i = 31; i >= 0; i--) {
+        unsigned v = (unsigned)s->deposit[i] + additional[i] + carry;
+        total[i] = (uint8_t)v;
+        carry = v >> 8;
+    }
+    if (trp__is_zero(additional, TRP_U256_LEN) || carry || !fits_u96(total)) return TRP_ERR_INVALID;
+    if ((err = check_policy(opt->policy, &r, additional)) != TRP_OK) return err;
+    if ((err = carve(work, work_cap, TOP_UP_CALLDATA_LEN, &b)) != TRP_OK) return err;
+
+    top_up_calldata(&s->descriptor, additional, b.calldata);
+    if ((err = sign_escrow_call(ch, opt, &r, s->descriptor.token, b.calldata, TOP_UP_CALLDATA_LEN, &b, &tx,
+                                &call, &envelope_len)) != TRP_OK)
+        return err;
+
+    trp_jw_init(&w, b.payload, b.payload_cap);
+    trp_jw_object_begin(&w);
+    trp_jw_key(&w, "action");
+    trp_jw_string(&w, "topUp", 5);
+    trp_jw_key(&w, "type");
+    trp_jw_string(&w, "transaction", 11);
+    trp_jw_key(&w, "channelId");
+    trp__jw_hex(&w, s->channel_id, 32);
+    trp_jw_key(&w, "transaction");
+    trp__jw_hex(&w, b.envelope, envelope_len);
+    trp_jw_key(&w, "descriptor");
+    jw_descriptor(&w, &s->descriptor);
+    trp_jw_key(&w, "additionalDeposit");
+    trp__jw_decimal(&w, additional);
+    trp_jw_object_end(&w);
+    if ((err = finish(ch, s, &w, &b, out, out_cap)) != TRP_OK) return err;
+    memcpy(s->deposit, total, TRP_U256_LEN);
+    return TRP_OK;
+}
+
+trp_err_t trp_session_close(trp_session *s, const trp_challenge *ch, const trp_signer *signer, char *out,
+                            size_t out_cap, uint8_t *work, size_t work_cap)
+{
+    trp_session_request r;
+    buffers b;
+    trp_json_writer w;
+    uint8_t digest[32], voucher[TRP_P256_SIGNATURE_LEN], close_sig[TRP_P256_SIGNATURE_LEN];
+    trp_err_t err;
+
+    if (!s || !ch || !signer || !signer->sign_digest) return TRP_ERR_INVALID;
+    if ((err = match_challenge(ch, s, &r)) != TRP_OK) return err;
+    if ((err = carve(work, work_cap, 0, &b)) != TRP_OK) return err;
+    if ((err = trp_voucher_digest(s->chain_id, s->escrow, s->channel_id, s->cumulative, digest)) != TRP_OK) return err;
+    if ((err = trp__sign_p256(signer, digest, voucher)) != TRP_OK) return err;
+    if ((err = trp_close_authorization_digest(s->chain_id, s->escrow, s->channel_id, s->cumulative, digest)) != TRP_OK)
+        return err;
+    if ((err = trp__sign_p256(signer, digest, close_sig)) != TRP_OK) return err;
+
+    trp_jw_init(&w, b.payload, b.payload_cap);
+    trp_jw_object_begin(&w);
+    trp_jw_key(&w, "action");
+    trp_jw_string(&w, "close", 5);
+    trp_jw_key(&w, "channelId");
+    trp__jw_hex(&w, s->channel_id, 32);
+    trp_jw_key(&w, "descriptor");
+    jw_descriptor(&w, &s->descriptor);
+    trp_jw_key(&w, "cumulativeAmount");
+    trp__jw_decimal(&w, s->cumulative);
+    trp_jw_key(&w, "signature");
+    trp__jw_hex(&w, voucher, sizeof(voucher));
+    trp_jw_key(&w, "closeSignature");
+    trp__jw_hex(&w, close_sig, sizeof(close_sig));
+    trp_jw_object_end(&w);
+    return finish(ch, s, &w, &b, out, out_cap);
+}

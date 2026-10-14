@@ -17,6 +17,8 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 - [x] Hex, Keccak-256, RLP writer, with host tests
 - [x] MPP core: challenge parsing, `request` decoding, credential encoding, checked against the [tempoxyz/mpp-tools](https://github.com/tempoxyz/mpp-tools) conformance vectors
 - [x] Tempo `charge`: 0x76 transaction, P-256 and Keychain signatures, the full challenge → credential flow, checked byte for byte against ox (the library mppx uses)
+- [x] Spending policy checked on the device before it signs: amount cap, token, recipient and chain allow-lists
+- [x] Tempo `session` (v2, the TIP-1034 channel escrow precompile): open, vouchers, top-up and close, all signed by the same P-256 key, credentials byte-identical to ox
 - [x] Software P-256 signer on the PSA Crypto API (mbedTLS 3.x and 4.x)
 - [x] Apple Secure Enclave signer (`ports/apple`): a hardware-held key on any Apple-silicon Mac
 - [ ] ATECC608A signer

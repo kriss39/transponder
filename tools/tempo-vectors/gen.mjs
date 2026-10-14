@@ -6,7 +6,8 @@
 // The attribution memo follows mppx 0.13.4 (src/tempo/Attribution.ts).
 
 import { AbiFunction, Address, Bytes, Hash, Hex, P256 } from 'ox'
-import { SignatureEnvelope, TxEnvelopeTempo } from 'ox/tempo'
+import { Channel, SignatureEnvelope, TxEnvelopeTempo } from 'ox/tempo'
+import { TypedData } from 'ox'
 
 const maxUint256 = 2n ** 256n - 1n
 
@@ -304,6 +305,155 @@ for (const f of flows) {
   out.push(`     ${hex(Hash.keccak256(serialized))}},`)
 }
 
+out.push('};')
+out.push('')
+
+// ---- Session (TIP-1034 v2): open, voucher, topUp, close -------------------
+//
+// Mirrors mppx 0.13.4's session client (src/tempo/session/client/ChannelOps.ts):
+// the access key signs the channel transactions as a Keychain V2 key and is the
+// channel's authorizedSigner, signing vouchers as a primitive P-256 signature.
+// Transponder writes every address in EIP-55 form; servers compare them
+// case-insensitively.
+
+const sessionNow = Math.floor(Date.parse('2026-10-14T11:00:00Z') / 1000)
+const escrow = Channel.address
+const salt = '0x' + 'aa'.repeat(32)
+const deposit = 1000000n
+const additional = 500000n
+const voucherAmount = 250n
+const sessionGas = 400000n
+const sessionMaxFee = 30000000000n
+const sessionValidAfter = 1700000789
+const sessionChallenge = {
+  id: 'ch_session_1',
+  realm: 'api.example.com',
+  method: 'tempo',
+  intent: 'session',
+  expires: '2026-10-14T11:00:20Z',
+  request: {
+    amount: '10',
+    currency: token,
+    recipient,
+    suggestedDeposit: '1000000',
+    unitType: 'request',
+    methodDetails: { chainId: 42431, escrowContract: escrow, sessionProtocol: 'v2' },
+  },
+}
+const sessionRequestWire = b64url(jcs(sessionChallenge.request))
+const sessionWire =
+  `Payment id="${sessionChallenge.id}", realm="${sessionChallenge.realm}", method="tempo", intent="session", ` +
+  `request="${sessionRequestWire}", expires="${sessionChallenge.expires}"`
+const sessionValidBefore = Math.min(sessionNow + 25, Math.floor(Date.parse(sessionChallenge.expires) / 1000))
+const authorizedSigner = keyAddress
+const escrowAbi = {
+  open: AbiFunction.from('function open(address payee, address operator, address token, uint96 deposit, bytes32 salt, address authorizedSigner)'),
+  topUp: AbiFunction.from('function topUp((address payer, address payee, address operator, address token, bytes32 salt, address authorizedSigner, bytes32 expiringNonceHash) descriptor, uint96 additionalDeposit)'),
+}
+const zero = '0x0000000000000000000000000000000000000000'
+const signings = [] // [digest, r, s] the fake signer must answer
+
+function channelTx(data) {
+  return TxEnvelopeTempo.from({
+    chainId: 42431,
+    calls: [{ to: escrow, data }],
+    gas: sessionGas,
+    maxFeePerGas: sessionMaxFee,
+    maxPriorityFeePerGas: 0n,
+    nonceKey: maxUint256,
+    nonce: 0n,
+    validBefore: sessionValidBefore,
+    validAfter: sessionValidAfter,
+    feeToken: token,
+  })
+}
+function signKeychain(envelope) {
+  const digest = TxEnvelopeTempo.getSignPayload(envelope, { from: owner })
+  const signature = P256.sign({ payload: digest, privateKey })
+  signings.push([digest, signature])
+  return TxEnvelopeTempo.serialize(envelope, {
+    signature: SignatureEnvelope.from({
+      type: 'keychain', version: 'v2', userAddress: owner,
+      inner: SignatureEnvelope.from({ signature, publicKey, prehash: false }),
+    }),
+  })
+}
+function signPrimitive(digest) {
+  const signature = P256.sign({ payload: digest, privateKey })
+  signings.push([digest, signature])
+  return SignatureEnvelope.serialize(SignatureEnvelope.from({ signature, publicKey, prehash: false }))
+}
+const credentialHeader = (payload) =>
+  `Payment ${b64url(JSON.stringify({
+    challenge: { id: sessionChallenge.id, realm: sessionChallenge.realm, method: 'tempo', intent: 'session', expires: sessionChallenge.expires, request: sessionRequestWire },
+    payload,
+    source: `did:pkh:eip155:42431:${Address.checksum(owner)}`,
+  }))}`
+
+// open
+const openTx = channelTx(AbiFunction.encodeData(escrowAbi.open, [recipient, zero, token, deposit, salt, authorizedSigner]))
+const openSerialized = signKeychain(openTx)
+const expiringNonceHash = Hash.keccak256(Hex.concat(TxEnvelopeTempo.encodeForSigning(openTx), owner))
+const descriptor = { authorizedSigner, expiringNonceHash, operator: zero, payee: recipient, payer: owner, salt, token }
+const channelId = Channel.computeId(descriptor, { chainId: 42431 })
+const jsonDescriptor = {
+  authorizedSigner: Address.checksum(authorizedSigner), expiringNonceHash, operator: zero,
+  payee: Address.checksum(recipient), payer: Address.checksum(owner), salt, token: Address.checksum(token),
+}
+const openVoucher = signPrimitive(Channel.getVoucherSignPayload({ chainId: 42431, channelId, cumulativeAmount: 0n }))
+const openHeader = credentialHeader({
+  action: 'open', type: 'transaction', channelId, transaction: openSerialized, signature: openVoucher,
+  descriptor: jsonDescriptor, cumulativeAmount: '0', authorizedSigner: Address.checksum(authorizedSigner),
+})
+
+// voucher
+const voucherSig = signPrimitive(Channel.getVoucherSignPayload({ chainId: 42431, channelId, cumulativeAmount: voucherAmount }))
+const voucherHeader = credentialHeader({
+  action: 'voucher', channelId, descriptor: jsonDescriptor, cumulativeAmount: voucherAmount.toString(), signature: voucherSig,
+})
+
+// topUp
+const topUpTx = channelTx(AbiFunction.encodeData(escrowAbi.topUp, [
+  { payer: owner, payee: recipient, operator: zero, token, salt, authorizedSigner, expiringNonceHash }, additional,
+]))
+const topUpHeader = credentialHeader({
+  action: 'topUp', type: 'transaction', channelId, transaction: signKeychain(topUpTx), descriptor: jsonDescriptor,
+  additionalDeposit: additional.toString(),
+})
+
+// close (at the last voucher)
+const closeDigest = TypedData.getSignPayload({
+  domain: { name: 'TIP20 Channel Reserve', version: '1', chainId: 42431, verifyingContract: escrow },
+  types: { CloseAuthorization: [{ name: 'channelId', type: 'bytes32' }, { name: 'cumulativeAmount', type: 'uint96' }] },
+  primaryType: 'CloseAuthorization',
+  message: { channelId, cumulativeAmount: voucherAmount },
+})
+const closeVoucher = signPrimitive(Channel.getVoucherSignPayload({ chainId: 42431, channelId, cumulativeAmount: voucherAmount }))
+const closeHeader = credentialHeader({
+  action: 'close', channelId, descriptor: jsonDescriptor, cumulativeAmount: voucherAmount.toString(),
+  signature: closeVoucher, closeSignature: signPrimitive(closeDigest),
+})
+
+const cs = (v) => JSON.stringify(v)
+out.push('/* Session: one channel through open, voucher (250), topUp (+500000) and close. */')
+out.push(`#define SV_WIRE ${cs(sessionWire)}`)
+out.push(`#define SV_NOW ${sessionNow}u`)
+out.push(`#define SV_VALID_AFTER ${sessionValidAfter}u`)
+out.push(`#define SV_GAS ${sessionGas}u`)
+out.push(`#define SV_MAX_FEE ${sessionMaxFee}u`)
+out.push(`#define SV_DEPOSIT "${deposit}"`)
+out.push(`#define SV_ADDITIONAL "${additional}"`)
+out.push(`#define SV_VOUCHER "${voucherAmount}"`)
+out.push(`#define SV_SALT ${hex(salt)}`)
+out.push(`#define SV_EXPIRING_NONCE_HASH ${hex(expiringNonceHash)}`)
+out.push(`#define SV_CHANNEL_ID ${hex(channelId)}`)
+out.push(`#define SV_OPEN ${cs(openHeader)}`)
+out.push(`#define SV_VOUCHER_HEADER ${cs(voucherHeader)}`)
+out.push(`#define SV_TOP_UP ${cs(topUpHeader)}`)
+out.push(`#define SV_CLOSE ${cs(closeHeader)}`)
+out.push('static const char *const SV_SIGNINGS[][3] = { /* digest, r, s */')
+for (const [d, sig] of signings)
+  out.push(`    {${hex(d)}, ${hex(Hex.fromNumber(sig.r, { size: 32 }))}, ${hex(Hex.fromNumber(sig.s, { size: 32 }))}},`)
 out.push('};')
 out.push('')
 out.push('#endif')

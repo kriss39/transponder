@@ -6,14 +6,14 @@ This document records what the specs require and how the library maps onto them.
 
 ## Goals
 
-- **Pay MPP `charge` challenges from a microcontroller**, first on an ESP32 with the ESP32-WROOM-32SE module (ATECC608A built in) under ESP-IDF.
+- **Pay MPP `charge` and `session` challenges from a microcontroller**, first on an ESP32 with the ESP32-WROOM-32SE module (ATECC608A built in) under ESP-IDF.
 - **Keys stay in hardware.** The signing key lives in a secure element (Microchip ATECC608A first) and is non-exportable. Tempo verifies P-256 signatures natively, which is what makes this possible: an Ethereum-style chain would need secp256k1, which these chips don't offer.
 - **The owner sets the limits, the chain enforces them.** The device key is a Tempo access key with a spending limit, a token and an expiry. A stolen device can spend at most what is left on its key, and the owner can revoke it.
 - **No heap.** Every function writes into caller-owned buffers. Nothing allocates.
 - **Portable core.** Encoding, hashing and protocol logic are plain C99 with no platform calls. Signing, randomness, time and HTTP sit behind small interfaces with per-platform backends.
 - **Conformance.** Pass the cross-SDK vectors in [tempoxyz/mpp-tools](https://github.com/tempoxyz/mpp-tools) that the official SDKs run in CI.
 
-Not goals for now: server-side verification, the `session` intent (its vouchers are secp256k1 EIP-712 signatures, see below), and payment methods other than Tempo.
+Not goals for now: server-side verification, `session` v1 (contract-backed channels), and payment methods other than Tempo.
 
 ## The payment, step by step
 
@@ -51,6 +51,8 @@ The device uses **pull mode**: it signs and the server broadcasts. That keeps th
 | Tempo | P-256 signature (130 bytes, low-s) and Keychain wrapper (`0x04`) | done |
 | Tempo | address from P-256 public key | done |
 | Tempo | charge flow: challenge → transaction → signature → credential (`trp_tempo_charge`) | done, credential identical to the reference |
+| Tempo | spending policy checked before signing: amount cap, token, recipient and chain allow-lists, approval callback | done |
+| Tempo | session v2 (TIP-1034 channel escrow precompile): open, voucher, top-up, close | done, credentials identical to ox; not yet run against a live server |
 | Signers | software P-256 (mbedTLS PSA API, `ports/mbedtls`) for host tests and boards without a secure element | done, signatures identical to ox |
 | Signers | Apple Secure Enclave through CryptoKit (`ports/apple`, pre-hashed P-256) | done, paid on Moderato |
 | Signers | ATECC608A through cryptoauthlib | |
@@ -108,10 +110,11 @@ Credential JSON keys are written in mppx's order: `id, realm, method, intent, de
 - **Memo.** Every SDK payment uses `transferWithMemo`. If the request has `methodDetails.memo`, that memo is used, as the spec requires; otherwise the MPP attribution memo (see `trp_mpp_attribution_memo`). mppx's client always writes the attribution memo, which conflicts with a server-set memo; Transponder follows the spec, and an mppx server accepts either case.
 - **Signature details.** Tempo and ox require low-s P-256 signatures; the encoder normalizes `s`. Keychain V2 signs `keccak256(0x04 || sender_hash || owner)`.
 
+- **Sessions.** Only `sessionProtocol: "v2"` is supported: channels live in the TIP-20 channel escrow precompile (`0x4d50500000000000000000000000000000000000`, TIP-1034), and any other `escrowContract` is refused, so a deposit can only go to the precompile. v2 vouchers accept TIP-1020 primitive signatures, P-256 included, so the device key is both the Keychain signer of the `open` and `topUp` transactions and the channel's `authorizedSigner`: vouchers come from the secure element too, and no secp256k1 key is needed. The EIP-712 domain is `TIP20 Channel Reserve`, version `1`; amounts are uint96. The channel id hashes the descriptor with the transaction's expiring-nonce hash (`keccak256(signing payload || owner)`), so `open` must be signed before the id is known. The client refuses a voucher that goes down or past the deposit, and a challenge whose chain, escrow, token or payee differs from the open channel's.
+
 ## Open questions
 
 - **Gas values.** `gas_limit` and the fee fields need either an RPC estimate or safe constants for a TIP-20 transfer. With a fee payer, check whether the server tolerates fixed values.
-- **Sessions.** Session vouchers are EIP-712 secp256k1 signatures. A clean design: the secure element's P-256 key opens the channel and names a short-lived secp256k1 `authorizedSigner` held in RAM. Later.
 
 ## References
 

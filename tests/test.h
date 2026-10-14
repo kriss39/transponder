@@ -41,5 +41,6 @@ void test_json(void);
 void test_challenge(void);
 void test_tempo(void);
 void test_charge(void);
+void test_session(void);
 
 #endif
