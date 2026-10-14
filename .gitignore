@@ -17,3 +17,5 @@ docs/PROGRESS.md
 
 # ESP-IDF example output
 examples/*/dependencies.lock
+.mainnet/
+.cloudflare/

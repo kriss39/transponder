@@ -425,9 +425,14 @@ int main(int argc, char **argv)
             printf("proof %s for challenge %.*s\n",
                    trp_receipt_verify(&receipt, "tempo", NULL) == TRP_OK ? "accepted" : "NOT accepted",
                    (int)receipt.reference.len, receipt.reference.ptr);
+        } else if (result.request.fee_payer) {
+            /* The server's fee-payer signature changes the hash, so only the status can be checked here. */
+            printf("receipt %s (fee sponsored by the server): %.*s\n",
+                   trp_receipt_verify(&receipt, "tempo", NULL) == TRP_OK ? "reports success" : "does NOT report success",
+                   (int)receipt.reference.len, receipt.reference.ptr);
         } else {
             printf("receipt %s: %.*s\n",
-                   trp_receipt_verify(&receipt, "tempo", result.request.fee_payer ? NULL : result.tx_hash) == TRP_OK
+                   trp_receipt_verify(&receipt, "tempo", result.tx_hash) == TRP_OK
                        ? "matches the transaction this device signed"
                        : "does NOT match",
                    (int)receipt.reference.len, receipt.reference.ptr);
