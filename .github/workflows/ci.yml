@@ -24,11 +24,18 @@ jobs:
 
   ports:
     # The software signer and the host demo, which need mbedTLS and libcurl.
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - name: Install mbedTLS
+        if: runner.os == 'macOS'
         run: brew install mbedtls
+      - name: Install mbedTLS and libcurl
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libmbedtls-dev libcurl4-openssl-dev
       - name: Software signer tests
         run: make test-mbedtls
       - name: Host demo and stack measurement

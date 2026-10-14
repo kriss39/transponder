@@ -4,8 +4,8 @@
 /* Transponder: an MPP (Machine Payments Protocol) client for microcontrollers. */
 
 #define TRP_VERSION_MAJOR 0
-#define TRP_VERSION_MINOR 0
-#define TRP_VERSION_PATCH 1
+#define TRP_VERSION_MINOR 1
+#define TRP_VERSION_PATCH 0
 
 #include "transponder/common.h"
 #include "transponder/hex.h"
