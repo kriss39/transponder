@@ -1,4 +1,4 @@
-version: "0.1.0"
+version: "0.2.0"
 description: "MPP (Machine Payments Protocol) client for microcontrollers: pays HTTP 402 challenges on Tempo with a key held in a secure element"
 url: "https://github.com/kriss39/transponder"
 repository: "https://github.com/kriss39/transponder.git"
