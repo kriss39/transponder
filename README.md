@@ -8,6 +8,8 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 >
 > **Status: early.** Transponder paid its first MPP service on Tempo testnet (Moderato) on 2026-10-14: a local mppx server charged 0.01 AlphaUSD, the payment settled in [`0x3c01ac56…83ab10`](https://explore.testnet.tempo.xyz/tx/0x3c01ac563dc3cd18a7052de8635103777e41487a033072c68232a8557583ab10), signed by an access key with a 5 AlphaUSD limit. The same day it paid again with a key held in the Secure Enclave of an M2 Mac ([`0xb0b71ac4…8f79f6`](https://explore.testnet.tempo.xyz/tx/0xb0b71ac46e7901b3917fa68eaaad457242faee905199d3807cbbdb9a718f79f6)): the private key never left the chip, which is the model for the ESP32 + ATECC608A version that comes next. It also runs MPP sessions: with a Secure Enclave key it opened a channel in the TIP-1034 escrow precompile ([`0xc3e29bf3…307760`](https://explore.testnet.tempo.xyz/tx/0xc3e29bf380e6f657aa7f32f42140908733caeb5b8e3e828301227ada1e307760)), paid for five requests with vouchers signed in the enclave, topped the channel up once, and the server closed it at the last voucher ([`0x9634fecf…a85c36`](https://explore.testnet.tempo.xyz/tx/0x9634fecf09650a27da42b37fe8d8d96ab5be7a60c94aedba212908927ba85c36)).
 
+**Try it:** a public MPP service runs at [telemetry.transponder.workers.dev](https://telemetry.transponder.workers.dev) on Tempo testnet ([`demo/cloudflare`](demo/cloudflare)).
+
 ## Why
 
 - **Hardware-held keys.** Tempo verifies P-256 signatures natively, the curve that secure elements like the ATECC608A sign with. The device's key is generated inside the chip and can't be read out.

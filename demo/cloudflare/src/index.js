@@ -7,14 +7,36 @@
 // tokens and go to a throwaway address.
 
 import { Mppx, tempo } from 'mppx/server'
+import { createClient, fallback, http } from 'viem'
+import { tempoModerato } from 'viem/tempo/chains'
 
 let mppx
 
+// Moderato's own RPC limits requests from Cloudflare's shared addresses, so
+// RPC_URLS (comma-separated, tried in order) starts with another provider.
+// That provider has no eth_sendRawTransactionSync, so payments are broadcast
+// without waiting for inclusion (after mppx has simulated them).
+function rpcClient(env) {
+  const urls = (env.RPC_URLS ?? 'https://rpc.moderato.tempo.xyz').split(',').map((u) => u.trim()).filter(Boolean)
+  return createClient({ chain: tempoModerato, transport: fallback(urls.map((u) => http(u))) })
+}
+
 function payments(env) {
-  mppx ??= Mppx.create({
-    methods: [tempo.charge({ currencies: [env.TOKEN], recipient: env.MERCHANT, testnet: true })],
-    secretKey: env.MPP_SECRET_KEY,
-  })
+  if (!mppx) {
+    const client = rpcClient(env)
+    mppx = Mppx.create({
+      methods: [
+        tempo.charge({
+          currencies: [env.TOKEN],
+          recipient: env.MERCHANT,
+          testnet: true,
+          getClient: () => client,
+          waitForConfirmation: env.WAIT_FOR_CONFIRMATION === 'true',
+        }),
+      ],
+      secretKey: env.MPP_SECRET_KEY,
+    })
+  }
   return mppx
 }
 

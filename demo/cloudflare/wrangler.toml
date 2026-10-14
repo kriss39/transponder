@@ -10,6 +10,10 @@ MERCHANT = "0xaA79b895A1C0fc06623570B6e44649A7Eb01F9dF"
 # AlphaUSD on Moderato (the faucet hands it out).
 TOKEN = "0x20c0000000000000000000000000000000000001"
 PRICE = "0.01"
+# Moderato RPC endpoints, tried in order. The official one limits Cloudflare's shared addresses.
+RPC_URLS = "https://tempo-moderato-testnet.drpc.org,https://rpc.moderato.tempo.xyz"
+# "true" waits for each payment to be included (needs eth_sendRawTransactionSync).
+WAIT_FOR_CONFIRMATION = "false"
 
 # MPP_SECRET_KEY is a secret: `npx wrangler secret put MPP_SECRET_KEY` (32+ random bytes, hex).
 # For `wrangler dev`, put it in .dev.vars (git-ignored).
