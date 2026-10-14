@@ -1,4 +1,5 @@
 menu "Transponder example"
+    # Where the device key lives is chosen under Component config -> Transponder.
 
     config TRP_WIFI_SSID
         string "Wi-Fi network"
@@ -20,24 +21,6 @@ menu "Transponder example"
         default ""
         help
             The account that authorized this device's key as an access key.
-
-    choice TRP_SIGNER
-        prompt "Where the device key lives"
-        default TRP_SIGNER_ATECC608
-
-        config TRP_SIGNER_ATECC608
-            bool "ATECC608A secure element (ESP32-WROOM-32SE)"
-            help
-                The key is generated in the chip and never leaves it. Set the
-                chip type, I2C pins and address under Component config ->
-                esp-cryptoauthlib.
-
-        config TRP_SIGNER_SOFTWARE
-            bool "Software key in flash (testnet only)"
-            help
-                A P-256 private key in the firmware, signed with mbedTLS. Only
-                for boards without a secure element, and only on testnet.
-    endchoice
 
     config TRP_ATECC608_SLOT
         int "ATECC608A key slot"

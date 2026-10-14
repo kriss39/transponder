@@ -1,6 +1,33 @@
 version: "0.1.0"
-description: "MPP (Machine Payments Protocol) client for microcontrollers, with Tempo keys held in a secure element"
+description: "MPP (Machine Payments Protocol) client for microcontrollers: pays HTTP 402 challenges on Tempo with a key held in a secure element"
 url: "https://github.com/kriss39/transponder"
+repository: "https://github.com/kriss39/transponder.git"
+documentation: "https://github.com/kriss39/transponder/blob/main/docs/API.md"
+issues: "https://github.com/kriss39/transponder/issues"
 license: "MIT"
+tags:
+  - mpp
+  - payments
+  - http-402
+  - tempo
+  - atecc608
+  - secure-element
 dependencies:
   idf: ">=5.0"
+  # The ATECC608A driver for ports/atecc608 (Kconfig: Transponder -> Signer port).
+  espressif/esp-cryptoauthlib: ">=3.7.9"
+examples:
+  - path: examples/esp32-pay
+files:
+  exclude:
+    - ".github/**/*"
+    - "build/**/*"
+    - "demo/**/*"
+    - "docs/PROGRESS.md"
+    - "examples/host-pay/**/*"
+    - "fuzz/**/*"
+    - "ports/apple/**/*"
+    - "scripts/**/*"
+    - "tests/**/*"
+    - "tools/**/*"
+    - "Makefile"

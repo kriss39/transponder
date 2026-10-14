@@ -22,7 +22,8 @@ Under **Transponder example**, set:
 - the Wi-Fi network and password
 - the URL
 - the owner account
-- the signer
+
+Under **Component config → Transponder**, choose the signer.
 
 Under **Component config → esp-cryptoauthlib**, set the ATECC608A chip type (Trust&Go, TrustFLEX or TrustCustom), plus its I2C pins and address. The defaults are SDA 21, SCL 22. Check them against your module's datasheet.
 

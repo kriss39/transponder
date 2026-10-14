@@ -1,7 +1,8 @@
 dependencies:
   idf: ">=5.2"
-  # Transponder itself: the repository root is an ESP-IDF component.
-  transponder:
-    path: ../../..
+  # Transponder from the ESP Component Registry; in this repository, the root.
+  kriss39/transponder:
+    version: "*"
+    override_path: "../../.."
   # The ATECC608A driver, used when the key lives in the secure element.
   espressif/esp-cryptoauthlib: ">=3.7.9"

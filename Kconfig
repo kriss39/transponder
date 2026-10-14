@@ -1,0 +1,27 @@
+menu "Transponder"
+
+    choice TRP_SIGNER
+        prompt "Signer port to build"
+        default TRP_SIGNER_ATECC608
+        help
+            The component builds one of the signer ports in ports/. Pick None
+            to supply your own trp_signer.
+
+        config TRP_SIGNER_ATECC608
+            bool "ATECC608A secure element"
+            help
+                The key is generated in the chip and never leaves it
+                (ports/atecc608, through esp-cryptoauthlib). Set the chip type,
+                I2C pins and address under Component config -> esp-cryptoauthlib.
+
+        config TRP_SIGNER_SOFTWARE
+            bool "Software key with mbedTLS (testnet only)"
+            help
+                A P-256 private key in the firmware (ports/mbedtls). Only for
+                boards without a secure element, and only on testnet.
+
+        config TRP_SIGNER_NONE
+            bool "None"
+    endchoice
+
+endmenu

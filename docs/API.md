@@ -24,11 +24,12 @@ On ESP-IDF the repository root is a component. Depend on it from `main/idf_compo
 
 ```yaml
 dependencies:
-  transponder:
-    path: ../../transponder   # or a git URL
+  kriss39/transponder:
+    version: "*"
+    override_path: "path/to/transponder"
 ```
 
-[`examples/esp32-pay`](../examples/esp32-pay) is a complete firmware that uses it.
+Under **Component config → Transponder**, choose which signer port the component builds. [`examples/esp32-pay`](../examples/esp32-pay) is a complete firmware that uses it.
 
 ## The signer
 

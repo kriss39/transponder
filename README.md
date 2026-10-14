@@ -94,7 +94,16 @@ set -a; . .testnet/device.env; set +a
 
 ## Use with ESP-IDF
 
-The repository root is an ESP-IDF component (`CMakeLists.txt` and `idf_component.yml`). Depend on it from your project's `main/idf_component.yml` (`transponder: {path: <checkout>}`) or put it under `components/`. Build the signer port you use (`ports/atecc608` or `ports/mbedtls`) in your own component, as the example does. [`examples/esp32-pay`](examples/esp32-pay) is a complete firmware: CI builds it on every push, but it has not run on a board yet.
+The repository root is an ESP-IDF component. Add it to your project's `main/idf_component.yml` from a checkout:
+
+```yaml
+dependencies:
+  kriss39/transponder:
+    version: "*"
+    override_path: "path/to/transponder"
+```
+
+Choose where the device key lives under **Component config → Transponder**. The component then builds that signer port: the ATECC608A (the default) or a software key for testnet. [`examples/esp32-pay`](examples/esp32-pay) is a complete firmware. CI builds it on every push, but it has not run on a board yet.
 
 ## License
 
