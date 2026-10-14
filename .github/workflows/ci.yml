@@ -18,6 +18,9 @@ jobs:
       - name: Sanitizers
         if: matrix.cc == 'clang'
         run: make asan CC=clang
+      - name: Replay the fuzz corpus under the sanitizers
+        if: matrix.cc == 'clang'
+        run: make fuzz-replay CC=clang
 
   conformance:
     # The official tempoxyz/mpp-tools runner, pinned in scripts/conformance.sh.
@@ -27,3 +30,12 @@ jobs:
       - uses: astral-sh/setup-uv@v5
       - name: mpp-tools conformance vectors
         run: sh scripts/conformance.sh
+
+  fuzz:
+    # libFuzzer with ASan and UBSan, a minute per target from the seed corpus.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fuzz
+        run: make fuzz-run FUZZ_CC=clang FUZZ_TIME=60
+

@@ -99,8 +99,10 @@ typedef struct {
      * keccak256 of the signed transaction. When the server sponsors the fee
      * (request.fee_payer) it adds its own signature, which changes the hash,
      * so the receipt's reference only matches this when fee_payer is 0.
+     * All zeros for a proof.
      */
     uint8_t tx_hash[32];
+    int proof; /* 1 when the challenge was for zero and nothing was paid */
 } trp_charge_result;
 
 /* How long a signed charge stays valid at most, as in the reference SDK. */
@@ -111,12 +113,27 @@ typedef struct {
  * policy (and `approve`), build the transfer, sign it as a Keychain V2
  * access-key transaction, and write the credential header value
  * (`Payment ...`) to `out`. `work` is scratch space: 4 KB covers one
- * transfer and a typical challenge; allow about 1.5 KB more per split.
+ * transfer and a typical challenge; allow about 1.5 KB more per split
+ * (8 KB covers TRP_MAX_SPLITS). `out`: 2 KB without splits, 4.5 KB with four.
  * `result` may be NULL.
+ *
+ * A challenge for an amount of zero asks the device to prove who it pays
+ * for, not to pay: the answer is a `proof` credential, the access key's
+ * signature over trp_proof_digest, and no transaction. The policy and
+ * `approve` are still consulted, since a proof reveals the owner's address.
  */
 trp_err_t trp_tempo_charge(const trp_challenge *challenge, const trp_charge_options *options,
                            char *out, size_t out_cap, uint8_t *work, size_t work_cap,
                            trp_charge_result *result);
+
+/*
+ * The EIP-712 digest a zero-amount proof signs: Proof(address account,
+ * string challengeId, string realm) in the domain {name "MPP", version "3",
+ * chainId}. An access key signs it as Keychain V2, through
+ * trp_tempo_keychain_digest, like a transaction.
+ */
+void trp_proof_digest(uint64_t chain_id, const uint8_t account[TRP_ADDRESS_LEN], trp_str challenge_id,
+                      trp_str realm, uint8_t out[32]);
 
 /* An RFC 3339 timestamp ("2026-01-29T12:05:00Z", offsets and fractions allowed) as unix seconds. */
 trp_err_t trp_parse_rfc3339(const char *s, size_t len, uint64_t *out);

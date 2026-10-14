@@ -92,7 +92,8 @@ static void test_flow(void)
     unhex(SV_SALT, salt, 32);
     CHECK(trp_challenge_parse(SV_WIRE, strlen(SV_WIRE), &ch, scratch, sizeof(scratch)) == TRP_OK);
 
-    CHECK(trp_session_open(&ch, &f.opt, deposit, salt, &s, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    /* The buffer sizes session.h documents: 4 KB out; 6.5 KB work for open and top-up, 4.5 KB otherwise. */
+    CHECK(trp_session_open(&ch, &f.opt, deposit, salt, &s, header, 4096, work, 6656) == TRP_OK);
     matches(header, SV_OPEN, "open");
     unhex(SV_CHANNEL_ID, want, 32);
     CHECK(memcmp(s.channel_id, want, 32) == 0);
@@ -102,16 +103,16 @@ static void test_flow(void)
     CHECK(memcmp(s.cumulative, want, 32) == 0);
 
     u256(SV_VOUCHER, amount);
-    CHECK(trp_session_voucher(&s, &ch, &f.signer, amount, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(trp_session_voucher(&s, &ch, &f.signer, amount, header, 4096, work, 4608) == TRP_OK);
     matches(header, SV_VOUCHER_HEADER, "voucher");
 
     u256(SV_ADDITIONAL, amount);
-    CHECK(trp_session_top_up(&s, &ch, &f.opt, amount, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(trp_session_top_up(&s, &ch, &f.opt, amount, header, 4096, work, 6656) == TRP_OK);
     matches(header, SV_TOP_UP, "topUp");
     u256("1500000", want);
     CHECK(memcmp(s.deposit, want, 32) == 0);
 
-    CHECK(trp_session_close(&s, &ch, &f.signer, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(trp_session_close(&s, &ch, &f.signer, header, 4096, work, 4608) == TRP_OK);
     matches(header, SV_CLOSE, "close");
     CHECK(f.key.unknown == 0);
 }

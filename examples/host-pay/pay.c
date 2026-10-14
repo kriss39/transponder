@@ -317,8 +317,8 @@ static int run_session(const char *url, int n, const trp_charge_options *opt, ex
 int main(int argc, char **argv)
 {
     static exchange ex;
-    static uint8_t work[4096];
-    static char credential[4096];
+    static uint8_t work[8192];      /* enough for TRP_MAX_SPLITS splits */
+    static char credential[8192];
     uint8_t owner[20], fee_token[20];
     trp_signer signer;
     trp_mbedtls_key key = {0};
@@ -413,12 +413,20 @@ int main(int argc, char **argv)
         const char *value = ex.receipt;
         while (*value == ' ') value++;
         printf("Payment-Receipt:%s\n", ex.receipt);
-        if (trp_receipt_parse(value, strlen(value), &receipt, receipt_scratch, sizeof(receipt_scratch)) == TRP_OK)
+        if (trp_receipt_parse(value, strlen(value), &receipt, receipt_scratch, sizeof(receipt_scratch)) != TRP_OK) {
+            printf("receipt does not parse\n");
+        } else if (result.proof) {
+            /* Nothing was paid: the receipt names the challenge the proof answered. */
+            printf("proof %s for challenge %.*s\n",
+                   trp_receipt_verify(&receipt, "tempo", NULL) == TRP_OK ? "accepted" : "NOT accepted",
+                   (int)receipt.reference.len, receipt.reference.ptr);
+        } else {
             printf("receipt %s: %.*s\n",
                    trp_receipt_verify(&receipt, "tempo", result.request.fee_payer ? NULL : result.tx_hash) == TRP_OK
                        ? "matches the transaction this device signed"
                        : "does NOT match",
                    (int)receipt.reference.len, receipt.reference.ptr);
+        }
     }
     curl_global_cleanup();
     return status == 200 ? 0 : 1;

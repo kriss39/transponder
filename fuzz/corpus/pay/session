@@ -1,0 +1,1 @@
+{"amount": "1000", "currency": "0x20c0000000000000000000000000000000000001", "recipient": "0x742d35cc6634c0532925a3b844bc9e7595f8fe00", "suggestedDeposit": "3000", "unitType": "reading", "methodDetails": {"chainId": 42431, "escrowContract": "0x4d50500000000000000000000000000000000000", "feeToken": "0x20c0000000000000000000000000000000000001", "sessionProtocol": "v2"}}

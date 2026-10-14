@@ -308,6 +308,65 @@ for (const f of flows) {
 out.push('};')
 out.push('')
 
+// ---- Proof: a zero-amount charge -------------------------------------------
+//
+// mppx 0.13.4 (src/tempo/client/Charge.ts and internal/proof.ts): the access
+// key signs EIP-712 Proof(account, challengeId, realm) in the domain
+// {name: "MPP", version: "3", chainId}, wrapped as a Keychain V2 signature,
+// whose inner P-256 signature covers keccak256(0x04 || proof hash || owner).
+
+const proofChallenge = {
+  id: 'ch_proof_1',
+  realm: 'api.example.com',
+  method: 'tempo',
+  intent: 'charge',
+  expires: '2026-10-14T10:05:00Z',
+  request: { amount: '0', currency: token, recipient, methodDetails: { chainId: 42431 } },
+}
+const proofRequestWire = b64url(jcs(proofChallenge.request))
+const proofWire =
+  `Payment id="${proofChallenge.id}", realm="${proofChallenge.realm}", method="tempo", intent="charge", ` +
+  `request="${proofRequestWire}", expires="${proofChallenge.expires}"`
+const proofHash = TypedData.getSignPayload({
+  domain: { name: 'MPP', version: '3', chainId: 42431 },
+  types: {
+    Proof: [
+      { name: 'account', type: 'address' },
+      { name: 'challengeId', type: 'string' },
+      { name: 'realm', type: 'string' },
+    ],
+  },
+  primaryType: 'Proof',
+  message: { account: owner, challengeId: proofChallenge.id, realm: proofChallenge.realm },
+})
+const proofDigest = Hash.keccak256(Hex.concat('0x04', proofHash, owner))
+const proofSignature = P256.sign({ payload: proofDigest, privateKey })
+const proofEnvelope = SignatureEnvelope.serialize(
+  SignatureEnvelope.from({
+    type: 'keychain',
+    version: 'v2',
+    userAddress: owner,
+    inner: SignatureEnvelope.from({ signature: proofSignature, publicKey, prehash: false }),
+  }),
+)
+const proofHeader = `Payment ${b64url(JSON.stringify({
+  challenge: {
+    id: proofChallenge.id, realm: proofChallenge.realm, method: 'tempo', intent: 'charge',
+    expires: proofChallenge.expires, request: proofRequestWire,
+  },
+  payload: { signature: proofEnvelope, type: 'proof' },
+  source: `did:pkh:eip155:42431:${Address.checksum(owner)}`,
+}))}`
+out.push('/* Proof: a zero-amount charge answered with a signed EIP-712 Proof. */')
+out.push(`#define PV_WIRE ${JSON.stringify(proofWire)}`)
+out.push(`#define PV_NOW ${now}u`)
+out.push(`#define PV_HASH ${hex(proofHash)}`)
+out.push(`#define PV_DIGEST ${hex(proofDigest)}`)
+out.push(`#define PV_SIG_R ${hex(Hex.fromNumber(proofSignature.r, { size: 32 }))}`)
+out.push(`#define PV_SIG_S ${hex(Hex.fromNumber(proofSignature.s, { size: 32 }))}`)
+out.push(`#define PV_CREDENTIAL ${JSON.stringify(proofHeader)}`)
+out.push('')
+
 // ---- Session (TIP-1034 v2): open, voucher, topUp, close -------------------
 //
 // Mirrors mppx 0.13.4's session client (src/tempo/session/client/ChannelOps.ts):

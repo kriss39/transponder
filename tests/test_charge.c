@@ -246,8 +246,6 @@ static void test_errors(void)
     CHECK(charge_with(BASE ",\"methodDetails\":{\"memo\":\"0x1234\"}}", NULL, &opt) == TRP_ERR_INVALID);
     CHECK(charge_with(BASE ",\"methodDetails\":{\"feePayer\":\"yes\"}}", NULL, &opt) == TRP_ERR_INVALID);
     CHECK(charge_with(BASE ",\"methodDetails\":{\"chainId\":0}}", NULL, &opt) == TRP_ERR_INVALID);
-    CHECK(charge_with("{\"amount\":\"0\",\"currency\":\"" TOKEN "\",\"recipient\":\"" RECIPIENT "\"}", NULL, &opt) ==
-          TRP_ERR_UNSUPPORTED);
     CHECK(charge_with("{\"amount\":\"5\",\"currency\":\"0x20c0\",\"recipient\":\"" RECIPIENT "\"}", NULL, &opt) ==
           TRP_ERR_INVALID);
     CHECK(charge_with("{\"amount\":5,\"currency\":\"" TOKEN "\",\"recipient\":\"" RECIPIENT "\"}", NULL, &opt) ==
@@ -342,11 +340,68 @@ static void test_helpers(void)
     CHECK(trp_parse_rfc3339("2026-10-14T10:00:00Zjunk", 24, &t) == TRP_ERR_INVALID);
 }
 
+/* A zero-amount challenge: a signed proof, as mppx's client answers it, and no transaction. */
+static void test_proof(void)
+{
+    trp_signer signer;
+    fake_key key;
+    uint8_t owner[20], token[20], other[20] = {0x99}, hash[32], zero[32] = {0};
+    trp_charge_options opt;
+    trp_charge_result result;
+    trp_spend_policy policy;
+    trp_challenge ch;
+    trp_str id = {"ch_proof_1", 10}, realm = {"api.example.com", 15};
+    int asked = 0;
+
+    setup(&signer, &key, owner, token, &opt);
+    trp_proof_digest(42431, owner, id, realm, hash);
+    CHECK_HEX(hash, 32, PV_HASH);
+
+    opt.now = PV_NOW;
+    opt.gas_limit = 1;     /* unused: nothing is sent on chain */
+    opt.max_fee_per_gas = 0;
+    unhex(PV_DIGEST, key.expected_digest, 32);
+    unhex(PV_SIG_R, key.r, 32);
+    unhex(PV_SIG_S, key.s, 32);
+    CHECK(trp_challenge_parse(PV_WIRE, strlen(PV_WIRE), &ch, scratch, sizeof(scratch)) == TRP_OK);
+    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work), &result) == TRP_OK);
+    CHECK(strcmp(header, PV_CREDENTIAL) == 0);
+    CHECK(result.proof == 1 && memcmp(result.tx_hash, zero, 32) == 0);
+    CHECK(key.calls == 1);
+
+    /* It reveals the owner, so the policy and approve still decide; an expired challenge is refused. */
+    policy = open_policy;
+    policy.recipients = (const uint8_t(*)[20])other;
+    policy.recipient_count = 1;
+    opt.policy = &policy;
+    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work), NULL) == TRP_ERR_DENIED);
+    opt.policy = &open_policy;
+    opt.approve = deny_all;
+    opt.approve_ctx = &asked;
+    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work), NULL) == TRP_ERR_DENIED);
+    CHECK(asked == 1);
+    opt.approve = NULL;
+    opt.now = PV_NOW + 3600;
+    CHECK(trp_tempo_charge(&ch, &opt, header, sizeof(header), work, sizeof(work), NULL) == TRP_ERR_INVALID);
+    CHECK(key.calls == 1);
+
+    /* Zero with splits cannot leave the primary recipient a share. */
+    opt.now = 1791972000u;
+    CHECK(charge_with("{\"amount\":\"0\",\"currency\":\"" TOKEN "\",\"recipient\":\"" RECIPIENT "\","
+                      "\"methodDetails\":{\"splits\":[{\"amount\":\"1\",\"recipient\":\"" RECIPIENT "\"}]}}",
+                      NULL, &opt) == TRP_ERR_INVALID);
+    /* Too small an output buffer. */
+    opt.now = PV_NOW;
+    CHECK(trp_challenge_parse(PV_WIRE, strlen(PV_WIRE), &ch, scratch, sizeof(scratch)) == TRP_OK);
+    CHECK(trp_tempo_charge(&ch, &opt, header, 64, work, sizeof(work), NULL) == TRP_ERR_BUFFER);
+}
+
 void test_charge(void)
 {
     test_vectors();
     test_policy();
     test_errors();
+    test_proof();
     test_buffers();
     test_helpers();
 }

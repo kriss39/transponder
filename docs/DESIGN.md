@@ -51,6 +51,7 @@ The device uses **pull mode**: it signs and the server broadcasts. That keeps th
 | Tempo | P-256 signature (130 bytes, low-s) and Keychain wrapper (`0x04`) | done |
 | Tempo | address from P-256 public key | done |
 | Tempo | charge flow: challenge → transaction → signature → credential (`trp_tempo_charge`) | done, credential identical to the reference |
+| Tempo | proof credential for zero-amount charges (EIP-712 `Proof`, Keychain V2 signature) | done, identical to ox, accepted by mppx on Moderato |
 | Tempo | spending policy checked before signing: amount cap, token, recipient and chain allow-lists, approval callback | done |
 | Tempo | session v2 (TIP-1034 channel escrow precompile): open, voucher, top-up, close | done, credentials identical to ox; run end to end on Moderato, with a Secure Enclave key too |
 | Signers | software P-256 (mbedTLS PSA API, `ports/mbedtls`) for host tests and boards without a secure element | done, signatures identical to ox |
@@ -60,6 +61,7 @@ The device uses **pull mode**: it signs and the server broadcasts. That keeps th
 | Platform | ESP-IDF: HTTP client, time, JSON-RPC calls | |
 | MPP core | `Payment-Receipt` parser | done |
 | Conformance | mpp-tools adapter (JSON ABI described in `HARNESS_SPEC.md`) | done, 121/121 on the official runner |
+| Robustness | libFuzzer targets for the parsers and the whole payment path (`fuzz/`), in CI | done |
 
 ## Tempo transaction (type 0x76)
 
@@ -97,6 +99,31 @@ From the Tempo Transactions specification. Fields, in RLP order:
 ### Who authorizes the device key
 
 The owner's root key (a passkey, in practice) signs a `KeyAuthorization` with `key_type = 1` (P-256), `key_id` = the device address, an `expiry`, and `limits` (token, amount, period). This happens once, from a browser, not on the device. Pitstop's Guard page already authorizes P-256 access keys this way, so it could provision devices too.
+
+## Memory
+
+Nothing allocates. The caller passes every buffer, and can make them `static` to keep them off the task's stack:
+
+| Buffer | Size that is enough |
+|---|---|
+| `scratch` for `trp_challenge_parse` / `trp_challenge_select` / `trp_receipt_parse` | 2 × header length + 16 |
+| `work` for a charge | 3 KB, plus about 1.1 KB per split (7.5 KB with four) |
+| `out` for a charge | 1.7 KB, plus about 0.6 KB per split (4.1 KB with four) |
+| `work` / `out` for session open and top-up | 6.4 KB / 3.5 KB |
+| `work` / `out` for a voucher or close | 4.5 KB / 2.6 KB |
+
+Measured with a 43-character challenge id and a short realm; longer challenge fields add about 4/3 of their length to `out`. 8 KB of `work` and 4.5 KB of `out` cover every call.
+
+Stack, measured by `make stack` (`tools/stack`) on an arm64 Mac at `-O2` and `-Os`, with a stub signer:
+
+| Entry point | Stack |
+|---|---|
+| `trp_challenge_parse` | 1.5 KB |
+| `trp_tempo_charge` (two splits, parse included) | 2.9 KB |
+| `trp_session_open` (parse included) | 2.5 KB |
+| `trp_session_voucher` / `top_up` / `close` | 1.8 / 2.2 / 1.9 KB |
+
+The signer's own stack comes on top: little for a secure element, more for software P-256. Frames differ by CPU and compiler (Xtensa's register windows add some), so on an ESP32 give the paying task 6 to 8 KB until it is measured there.
 
 ## Conformance
 

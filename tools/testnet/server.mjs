@@ -6,6 +6,8 @@
 //   GET /reading   charge: 0.01 AlphaUSD per reading
 //   GET /stream    session: 0.001 AlphaUSD per reading, paid with vouchers
 //                  from a channel in the TIP-1034 escrow precompile
+//   GET /identify  free, but the client must prove which account it pays
+//                  for (a zero-amount charge, answered with a signed proof)
 //
 // Run setup.mjs first: it writes the merchant address this server charges to.
 // The session route closes channels on chain as the merchant, so it reads the
@@ -44,13 +46,15 @@ const mppx = Mppx.create({
 })
 const charge = mppx.charge({ amount: '0.01', description: 'One sensor reading' })
 const session = mppx.session({ amount: '0.001', description: 'Sensor readings, paid per reading' })
+const identify = mppx.charge({ amount: '0', description: 'Prove which account this device pays for' })
 
 async function handle(request) {
   const url = new URL(request.url)
-  const route = { '/reading': charge, '/stream': session }[url.pathname]
+  const route = { '/reading': charge, '/stream': session, '/identify': identify }[url.pathname]
   if (!route) return new Response('not found\n', { status: 404 })
   const result = await route(request)
   if (result.status === 402) return result.challenge
+  if (url.pathname === '/identify') return result.withReceipt(Response.json({ identified: true }))
   return result.withReceipt(Response.json({ reading: 21.5, unit: 'C', paid: true }))
 }
 

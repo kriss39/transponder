@@ -82,7 +82,12 @@ typedef struct {
  * Open a channel: deposit `deposit` (checked against options->policy, which
  * also limits token, recipient and chain), and write the `open` credential
  * with the initial voucher for one unit (the price). `salt` must be 32 fresh random bytes.
- * options->approve is not used here. `work`: 4 KB is enough.
+ * options->approve is not used here.
+ *
+ * Buffers for every session call: `work` 8 KB (open and top-up use about
+ * 6.5 KB, voucher and close 4.5 KB) and `out` 4 KB, measured with a
+ * 43-character challenge id; longer challenge fields add about 4/3 of their
+ * length to `out`.
  */
 trp_err_t trp_session_open(const trp_challenge *challenge, const trp_charge_options *options,
                            const uint8_t deposit[TRP_U256_LEN], const uint8_t salt[32],
