@@ -20,7 +20,7 @@ The library is C99 with no heap allocation and no platform calls. Compile `src/*
 #include "transponder/transponder.h"
 ```
 
-On ESP-IDF the repository root is a component. Depend on it from `main/idf_component.yml`:
+On ESP-IDF, add it from the [ESP Component Registry](https://components.espressif.com/components/kriss39/transponder) with `idf.py add-dependency "kriss39/transponder^0.2.0"`. To use a checkout instead, depend on it from `main/idf_component.yml`:
 
 ```yaml
 dependencies:

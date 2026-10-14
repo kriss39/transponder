@@ -94,7 +94,13 @@ set -a; . .testnet/device.env; set +a
 
 ## Use with ESP-IDF
 
-The repository root is an ESP-IDF component. Add it to your project's `main/idf_component.yml` from a checkout:
+Transponder is on the [ESP Component Registry](https://components.espressif.com/components/kriss39/transponder):
+
+```sh
+idf.py add-dependency "kriss39/transponder^0.2.0"
+```
+
+The repository root is the same component, so a checkout works too:
 
 ```yaml
 dependencies:
