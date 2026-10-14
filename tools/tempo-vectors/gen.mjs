@@ -400,10 +400,12 @@ const jsonDescriptor = {
   authorizedSigner: Address.checksum(authorizedSigner), expiringNonceHash, operator: zero,
   payee: Address.checksum(recipient), payer: Address.checksum(owner), salt, token: Address.checksum(token),
 }
-const openVoucher = signPrimitive(Channel.getVoucherSignPayload({ chainId: 42431, channelId, cumulativeAmount: 0n }))
+// Like mppx's client, the open carries a voucher for the first request's price.
+const initialAmount = BigInt(sessionChallenge.request.amount)
+const openVoucher = signPrimitive(Channel.getVoucherSignPayload({ chainId: 42431, channelId, cumulativeAmount: initialAmount }))
 const openHeader = credentialHeader({
   action: 'open', type: 'transaction', channelId, transaction: openSerialized, signature: openVoucher,
-  descriptor: jsonDescriptor, cumulativeAmount: '0', authorizedSigner: Address.checksum(authorizedSigner),
+  descriptor: jsonDescriptor, cumulativeAmount: initialAmount.toString(), authorizedSigner: Address.checksum(authorizedSigner),
 })
 
 // voucher

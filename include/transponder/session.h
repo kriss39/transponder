@@ -81,7 +81,7 @@ typedef struct {
 /*
  * Open a channel: deposit `deposit` (checked against options->policy, which
  * also limits token, recipient and chain), and write the `open` credential
- * with the initial zero voucher. `salt` must be 32 fresh random bytes.
+ * with the initial voucher for one unit (the price). `salt` must be 32 fresh random bytes.
  * options->approve is not used here. `work`: 4 KB is enough.
  */
 trp_err_t trp_session_open(const trp_challenge *challenge, const trp_charge_options *options,

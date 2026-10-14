@@ -4,7 +4,7 @@
 
 Transponder lets a device pay for an API over the Machine Payments Protocol, the HTTP 402 standard from Tempo and Stripe. It answers a `402 Payment Required` challenge with a signed Tempo transaction, and the signing key never leaves the device's secure element.
 
-> **Status: early.** Transponder paid its first MPP service on Tempo testnet (Moderato) on 2026-10-14: a local mppx server charged 0.01 AlphaUSD, the payment settled in [`0x3c01ac56…83ab10`](https://explore.testnet.tempo.xyz/tx/0x3c01ac563dc3cd18a7052de8635103777e41487a033072c68232a8557583ab10), signed by an access key with a 5 AlphaUSD limit. The same day it paid again with a key held in the Secure Enclave of an M2 Mac ([`0xb0b71ac4…8f79f6`](https://explore.testnet.tempo.xyz/tx/0xb0b71ac46e7901b3917fa68eaaad457242faee905199d3807cbbdb9a718f79f6)): the private key never left the chip, which is the model for the ESP32 + ATECC608A version that comes next.
+> **Status: early.** Transponder paid its first MPP service on Tempo testnet (Moderato) on 2026-10-14: a local mppx server charged 0.01 AlphaUSD, the payment settled in [`0x3c01ac56…83ab10`](https://explore.testnet.tempo.xyz/tx/0x3c01ac563dc3cd18a7052de8635103777e41487a033072c68232a8557583ab10), signed by an access key with a 5 AlphaUSD limit. The same day it paid again with a key held in the Secure Enclave of an M2 Mac ([`0xb0b71ac4…8f79f6`](https://explore.testnet.tempo.xyz/tx/0xb0b71ac46e7901b3917fa68eaaad457242faee905199d3807cbbdb9a718f79f6)): the private key never left the chip, which is the model for the ESP32 + ATECC608A version that comes next. It also runs MPP sessions: with a Secure Enclave key it opened a channel in the TIP-1034 escrow precompile ([`0xc3e29bf3…307760`](https://explore.testnet.tempo.xyz/tx/0xc3e29bf380e6f657aa7f32f42140908733caeb5b8e3e828301227ada1e307760)), paid for five requests with vouchers signed in the enclave, topped the channel up once, and the server closed it at the last voucher ([`0x9634fecf…a85c36`](https://explore.testnet.tempo.xyz/tx/0x9634fecf09650a27da42b37fe8d8d96ab5be7a60c94aedba212908927ba85c36)).
 
 ## Why
 
@@ -18,7 +18,7 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 - [x] MPP core: challenge parsing, `request` decoding, credential encoding, checked against the [tempoxyz/mpp-tools](https://github.com/tempoxyz/mpp-tools) conformance vectors
 - [x] Tempo `charge`: 0x76 transaction, P-256 and Keychain signatures, the full challenge → credential flow, checked byte for byte against ox (the library mppx uses)
 - [x] Spending policy checked on the device before it signs: amount cap, token, recipient and chain allow-lists
-- [x] Tempo `session` (v2, the TIP-1034 channel escrow precompile): open, vouchers, top-up and close, all signed by the same P-256 key, credentials byte-identical to ox
+- [x] Tempo `session` (v2, the TIP-1034 channel escrow precompile): open, vouchers, top-up and close, all signed by the same P-256 key, credentials byte-identical to ox, run end to end against a stock mppx server on Moderato
 - [x] Software P-256 signer on the PSA Crypto API (mbedTLS 3.x and 4.x)
 - [x] Apple Secure Enclave signer (`ports/apple`): a hardware-held key on any Apple-silicon Mac
 - [ ] ATECC608A signer
@@ -57,12 +57,19 @@ set -a; . .testnet/device.env; set +a
 ./build/pay http://127.0.0.1:8402/reading
 ```
 
+Pay per request through a session instead: one deposit on chain, then a signed voucher per request. The session key setup.mjs authorizes may only open and top up channels in the escrow precompile, with a 1 AlphaUSD budget:
+
+```sh
+./build/pay --session 5 http://127.0.0.1:8402/stream   # 0.001 AlphaUSD per reading
+```
+
 On an Apple-silicon Mac, sign with a key in the Secure Enclave instead:
 
 ```sh
 make enclave-key pay-enclave
-./build/enclave-key create .testnet/enclave.key
-cd tools/testnet && node setup.mjs && cd ../..   # authorizes the enclave key too
+./build/enclave-key create .testnet/enclave.key           # for charges
+./build/enclave-key create .testnet/enclave-session.key   # for sessions
+cd tools/testnet && node setup.mjs && cd ../..   # authorizes the enclave keys too
 set -a; . .testnet/device.env; set +a
 ./build/pay http://127.0.0.1:8402/reading
 ```

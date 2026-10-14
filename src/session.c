@@ -342,7 +342,6 @@ trp_err_t trp_session_open(const trp_challenge *ch, const trp_charge_options *op
                            const uint8_t deposit[TRP_U256_LEN], const uint8_t salt[32],
                            trp_session *s, char *out, size_t out_cap, uint8_t *work, size_t work_cap)
 {
-    static const uint8_t ZERO[TRP_U256_LEN] = {0};
     trp_session_request r;
     trp_session next;
     buffers b;
@@ -383,8 +382,10 @@ trp_err_t trp_session_open(const trp_challenge *ch, const trp_charge_options *op
         return err;
     trp_channel_id(&next.descriptor, next.escrow, next.chain_id, next.channel_id);
 
-    /* The initial zero voucher proves the authorized signer is live. */
-    if ((err = trp_voucher_digest(next.chain_id, next.escrow, next.channel_id, ZERO, digest)) != TRP_OK) return err;
+    /* The open pays for the request that carries it: its voucher covers one unit, as mppx's does. */
+    memcpy(next.cumulative, r.price, TRP_U256_LEN);
+    if ((err = trp_voucher_digest(next.chain_id, next.escrow, next.channel_id, next.cumulative, digest)) != TRP_OK)
+        return err;
     if ((err = trp__sign_p256(opt->signer, digest, voucher)) != TRP_OK) return err;
 
     /* Fields in mppx's order. */
@@ -403,7 +404,7 @@ trp_err_t trp_session_open(const trp_challenge *ch, const trp_charge_options *op
     trp_jw_key(&w, "descriptor");
     jw_descriptor(&w, &next.descriptor);
     trp_jw_key(&w, "cumulativeAmount");
-    trp_jw_string(&w, "0", 1);
+    trp__jw_decimal(&w, next.cumulative);
     trp_jw_key(&w, "authorizedSigner");
     trp__jw_address(&w, next.descriptor.authorized_signer);
     trp_jw_object_end(&w);

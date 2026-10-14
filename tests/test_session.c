@@ -98,6 +98,8 @@ static void test_flow(void)
     CHECK(memcmp(s.channel_id, want, 32) == 0);
     unhex(SV_EXPIRING_NONCE_HASH, want, 32);
     CHECK(memcmp(s.descriptor.expiring_nonce_hash, want, 32) == 0);
+    u256("10", want); /* the open's voucher pays for its own request */
+    CHECK(memcmp(s.cumulative, want, 32) == 0);
 
     u256(SV_VOUCHER, amount);
     CHECK(trp_session_voucher(&s, &ch, &f.signer, amount, header, sizeof(header), work, sizeof(work)) == TRP_OK);
