@@ -111,6 +111,8 @@ Nothing allocates. The caller passes every buffer, and can make them `static` to
 | `out` for a charge | 1.7 KB, plus about 0.6 KB per split (4.1 KB with four) |
 | `work` / `out` for session open and top-up | 6.4 KB / 3.5 KB |
 | `work` / `out` for a voucher or close | 4.5 KB / 2.6 KB |
+| A saved session (`trp_session_save`) | 338 bytes |
+| The channel read (`trp_session_state_request`) / its answer | 201 bytes / about 250 bytes |
 
 Measured with a 43-character challenge id and a short realm; longer challenge fields add about 4/3 of their length to `out`. 8 KB of `work` and 4.5 KB of `out` cover every call.
 
@@ -122,6 +124,7 @@ Stack, measured by `make stack` (`tools/stack`) on an arm64 Mac at `-O2` and `-O
 | `trp_tempo_charge` (two splits, parse included) | 2.9 KB |
 | `trp_session_open` (parse included) | 2.5 KB |
 | `trp_session_voucher` / `top_up` / `close` | 1.8 / 2.2 / 1.9 KB |
+| `trp_session_load` + `trp_session_sync` | 1.5 KB |
 
 The signer's own stack comes on top: little for a secure element, more for software P-256. Frames differ by CPU and compiler (Xtensa's register windows add some), so on an ESP32 give the paying task 6 to 8 KB until it is measured there.
 
@@ -138,6 +141,8 @@ Credential JSON keys are written in mppx's order: `id, realm, method, intent, de
 - **Signature details.** Tempo and ox require low-s P-256 signatures; the encoder normalizes `s`. Keychain V2 signs `keccak256(0x04 || sender_hash || owner)`.
 
 - **Sessions.** Only `sessionProtocol: "v2"` is supported: channels live in the TIP-20 channel escrow precompile (`0x4d50500000000000000000000000000000000000`, TIP-1034), and any other `escrowContract` is refused, so a deposit can only go to the precompile. v2 vouchers accept TIP-1020 primitive signatures, P-256 included, so the device key is both the Keychain signer of the `open` and `topUp` transactions and the channel's `authorizedSigner`: vouchers come from the secure element too, and no secp256k1 key is needed. The EIP-712 domain is `TIP20 Channel Reserve`, version `1`; amounts are uint96. The channel id hashes the descriptor with the transaction's expiring-nonce hash (`keccak256(signing payload || owner)`), so `open` must be signed before the id is known. The client refuses a voucher that goes down or past the deposit, a raise below the server's `minVoucherDelta`, a voucher signed by any key but the channel's `authorizedSigner` or after a close, and a challenge whose chain, escrow, token or payee differs from the open channel's. A top-up stays pending until the caller reports the server's answer (`trp_session_top_up_confirmed` or `_failed`), so a failed request cannot make the device believe in a deposit that is not on chain, and only one top-up is pending at a time. For sessions the policy's `max_amount` limits the channel's whole deposit, and `approve` is asked for the open deposit and each top-up. The `open` carries a voucher for one unit, the price, as mppx's client does: the request that opens the channel is also paid by it. On Moderato the deposit counts against the access key's spending limit, so the chain caps what a session key can lock in channels.
+
+- **Restarts.** A device that loses its session mid-channel cannot pay with it again, and its deposit stays locked until the server closes the channel. So the session can be saved (`trp_session_save`, 338 bytes with a version and a checksum) and loaded back; `trp_session_load` refuses anything with a bad checksum or a channel ID that does not match its descriptor. The rule is to save after every call that signs and before its credential is sent: then the saved cumulative is never below what the server holds, and the device never needs the server's word for it. mppx can also hint at a channel in the challenge (`methodDetails.sessionSnapshot`), but only when the request already names the channel, which a device that lost its state cannot do, and trusting the hint's amounts would take a P-256 verify on the device; so Transponder does not use it. After loading, the device reads the channel from the escrow (`getChannelState`, an `eth_call` that `trp_session_state_request` writes as a JSON-RPC body) and `trp_session_sync` applies the answer: the chain's deposit replaces the saved one, a pending top-up is confirmed if the deposit includes it, a channel with no deposit or a close request is marked closed, and the cumulative rises to what the server has settled if that is more. Until a minute after the last open or top-up transaction's `valid_before` (at most 25 seconds after signing) that transaction could still land, so sync answers `TRP_ERR_PENDING` and changes nothing rather than give up on a deposit that may yet appear. Verified on Moderato with a Secure Enclave key on 2026-10-14: a channel opened in one run was restored in the next, topped up and paid three more vouchers, and closed from a third.
 
 ## Open questions
 

@@ -13,6 +13,13 @@
  * (one deposit on chain), then pay for N requests in all with vouchers,
  * topping the channel up when the deposit runs out, and close it.
  *
+ *   ./build/pay --session 3 --state channel.bin http://127.0.0.1:8402/stream
+ *
+ * With --state FILE, the session survives a restart, as on a device that
+ * keeps it in flash: it is saved before every credential goes out, read back
+ * and checked against the chain on the next run, which continues the same
+ * channel and leaves it open. --session 0 --state FILE closes it.
+ *
  * Configuration comes from the environment, as written by
  * tools/testnet/setup.mjs:
  *
@@ -29,6 +36,8 @@
  *                     top up channels, and the gas for those transactions
  *   TRP_SESSION_DEPOSIT   optional: deposit in base units (default: the
  *                     server's suggestedDeposit, else N times the price)
+ *   TRP_RPC_URL       optional, for --state: where to read the channel
+ *                     (default https://rpc.moderato.tempo.xyz)
  */
 
 #define _DEFAULT_SOURCE /* arc4random on glibc */
@@ -39,6 +48,7 @@
 #include <string.h>
 #include <strings.h>
 #include <time.h>
+#include <unistd.h>
 
 #include "transponder/challenge.h"
 #include "transponder/charge.h"
@@ -217,8 +227,96 @@ static void print_receipt(const exchange *ex)
     if (ex->receipt[0]) printf("  Payment-Receipt:%s\n", ex->receipt);
 }
 
-/* Open a channel, pay for `n` requests in all, top up as needed, close. */
-static int run_session(const char *url, int n, const trp_charge_options *opt, exchange *ex)
+/* POST a JSON-RPC request; the answer lands in ex->body. */
+static long post_json(const char *url, const char *body, exchange *ex)
+{
+    CURL *curl = curl_easy_init();
+    struct curl_slist *headers = curl_slist_append(NULL, "Content-Type: application/json");
+    long status = 0;
+
+    memset(ex, 0, sizeof(*ex));
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, body);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, on_body);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, ex);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+    if (curl_easy_perform(curl) == CURLE_OK) curl_easy_getinfo(curl, CURLINFO_RESPONSE_CODE, &status);
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    return status;
+}
+
+/* Write the session to `path` before its credential goes out, as a device writes it to flash. */
+static int save_state(const char *path, const trp_session *s)
+{
+    uint8_t state[TRP_SESSION_STATE_LEN];
+    FILE *f;
+
+    if (!path) return 0;
+    trp_session_save(s, state);
+    if (!(f = fopen(path, "wb")) || fwrite(state, 1, sizeof(state), f) != sizeof(state) || fclose(f) != 0) {
+        fprintf(stderr, "could not save the session to %s\n", path);
+        return -1;
+    }
+    return 0;
+}
+
+/*
+ * Restore the session saved in `path` and check it against the chain.
+ * 1: a usable channel; 0: none (no file, or the channel is gone); -1: error.
+ */
+static int restore_state(const char *path, trp_session *s)
+{
+    static exchange rpc;
+    uint8_t state[TRP_SESSION_STATE_LEN + 1];
+    char body[256];
+    const char *rpc_url = getenv("TRP_RPC_URL") ? getenv("TRP_RPC_URL") : "https://rpc.moderato.tempo.xyz";
+    size_t len;
+    trp_err_t err;
+    FILE *f;
+    int i;
+
+    if (!path || !(f = fopen(path, "rb"))) return 0;
+    len = fread(state, 1, sizeof(state), f);
+    fclose(f);
+    if (trp_session_load(s, state, len) != TRP_OK) {
+        fprintf(stderr, "%s does not hold a saved session\n", path);
+        return -1;
+    }
+    if (trp_session_state_request(s, body, sizeof(body)) != TRP_OK) return -1;
+    for (;;) {
+        long status = post_json(rpc_url, body, &rpc);
+        if (status != 200) {
+            fprintf(stderr, "channel read from %s failed (%ld)\n", rpc_url, status);
+            return -1;
+        }
+        err = trp_session_sync(s, rpc.body, rpc.body_len, (uint64_t)time(NULL));
+        if (err != TRP_ERR_PENDING) break;
+        printf("the last channel transaction may still land; reading again in 10 s\n");
+        sleep(10);
+    }
+    if (err != TRP_OK) {
+        fprintf(stderr, "channel read failed: %s\n", rpc.body);
+        return -1;
+    }
+    printf("restored channel 0x");
+    for (i = 0; i < 32; i++) printf("%02x", s->channel_id[i]);
+    if (s->closed) {
+        printf(": closed on chain\n");
+        return 0;
+    }
+    printf("\n");
+    return 1;
+}
+
+/*
+ * Pay for `n` requests in a channel, topping up as needed. Without a state
+ * file: open a channel, then close it at the end. With one: continue the
+ * channel saved there if the chain still has it, keep it open at the end,
+ * and close it when n is 0.
+ */
+static int run_session(const char *url, int n, const char *state_path, const trp_charge_options *opt, exchange *ex)
 {
     static uint8_t work[8192];
     static char credential[16384];
@@ -226,11 +324,11 @@ static int run_session(const char *url, int n, const trp_charge_options *opt, ex
     trp_session_request r;
     trp_session s;
     uint8_t deposit[32], salt[32], amount[32];
-    uint64_t price, initial, deposited;
+    uint64_t price, initial, deposited = 0, paid = 0;
     const char *env_deposit = getenv("TRP_SESSION_DEPOSIT");
     trp_err_t err;
     long status;
-    int i;
+    int i, have;
 
     if ((err = select_challenge(ex, "session", &ch)) != TRP_OK) {
         fprintf(stderr, "no Tempo session challenge (%d): %s\n", (int)err, ex->challenge);
@@ -245,34 +343,50 @@ static int run_session(const char *url, int n, const trp_charge_options *opt, ex
     } else if (r.has_suggested_deposit) {
         memcpy(deposit, r.suggested_deposit, 32);
     } else {
-        u256_from_u64(price * (uint64_t)n, deposit);
+        u256_from_u64(price * (uint64_t)(n ? n : 1), deposit);
     }
     if (u64_from_u256(deposit, &initial) != 0) return 2;
-    printf("session: %llu per request, opening a channel with %llu\n", (unsigned long long)price,
-           (unsigned long long)initial);
 
-    arc4random_buf(salt, sizeof(salt));
-    err = trp_session_open(&ch, opt, deposit, salt, &s, credential, sizeof(credential), work, sizeof(work));
-    if (err == TRP_ERR_DENIED) {
-        fprintf(stderr, "refused: the deposit is outside this device's spending policy\n");
-        return 1;
+    if ((have = restore_state(state_path, &s)) < 0) return 1;
+    if (have) {
+        if (u64_from_u256(s.deposit, &deposited) != 0 || u64_from_u256(s.cumulative, &paid) != 0) return 1;
+        printf("session: %llu per request, continuing at %llu of %llu deposited\n", (unsigned long long)price,
+               (unsigned long long)paid, (unsigned long long)deposited);
+    } else if (n == 0) {
+        printf("no open channel to close\n");
+        return 0;
     }
-    if (err != TRP_OK) {
-        fprintf(stderr, "could not open the channel (%d)\n", (int)err);
-        return 1;
-    }
-    printf("channel 0x");
-    for (i = 0; i < 32; i++) printf("%02x", s.channel_id[i]);
-    printf("\n");
-    status = send_credential(url, &ch, credential, ex);
-    printf("request 1 (open) -> %ld %s\n", status, ex->body);
-    print_receipt(ex);
-    if (status != 200) return 1;
-    deposited = initial;
 
-    for (i = 2; i <= n; i++) {
-        uint64_t total = price * (uint64_t)i;
+    for (i = 1; i <= n; i++) {
+        uint64_t total = paid + price;
         int attempt;
+
+        if (!have) {
+            printf("session: %llu per request, opening a channel with %llu\n", (unsigned long long)price,
+                   (unsigned long long)initial);
+            arc4random_buf(salt, sizeof(salt));
+            err = trp_session_open(&ch, opt, deposit, salt, &s, credential, sizeof(credential), work, sizeof(work));
+            if (err == TRP_ERR_DENIED) {
+                fprintf(stderr, "refused: the deposit is outside this device's spending policy\n");
+                return 1;
+            }
+            if (err != TRP_OK) {
+                fprintf(stderr, "could not open the channel (%d)\n", (int)err);
+                return 1;
+            }
+            printf("channel 0x");
+            for (attempt = 0; attempt < 32; attempt++) printf("%02x", s.channel_id[attempt]);
+            printf("\n");
+            if (save_state(state_path, &s) != 0) return 1;
+            status = send_credential(url, &ch, credential, ex);
+            printf("request %d (open) -> %ld %s\n", i, status, ex->body);
+            print_receipt(ex);
+            if (status != 200) return 1;
+            have = 1;
+            deposited = initial;
+            paid = price;
+            continue;
+        }
 
         if (total > deposited) {
             u256_from_u64(initial, amount);
@@ -281,15 +395,20 @@ static int run_session(const char *url, int n, const trp_charge_options *opt, ex
                 fprintf(stderr, "could not top up (%d)\n", (int)err);
                 return 1;
             }
+            if (save_state(state_path, &s) != 0) return 1;
             status = send_credential(url, &ch, credential, ex);
             printf("top up +%llu -> %ld\n", (unsigned long long)initial, status);
             if (status != 200 && status != 204) {
                 /* Refused: forget it. No answer at all: it may be on chain, so stop rather than sign again. */
-                if (status >= 400) trp_session_top_up_failed(&s);
+                if (status >= 400) {
+                    trp_session_top_up_failed(&s);
+                    save_state(state_path, &s);
+                }
                 printf("%s\n", ex->body);
                 return 1;
             }
             trp_session_top_up_confirmed(&s);
+            if (save_state(state_path, &s) != 0) return 1;
             deposited += initial;
         }
         u256_from_u64(total, amount);
@@ -300,21 +419,28 @@ static int run_session(const char *url, int n, const trp_charge_options *opt, ex
                 fprintf(stderr, "could not sign the voucher (%d)\n", (int)err);
                 return 1;
             }
+            if (save_state(state_path, &s) != 0) return 1;
             status = send_credential(url, &ch, credential, ex);
             /* A stale challenge earns a fresh one; sign again against it. */
             if (status != 402 || select_challenge(ex, "session", &ch) != TRP_OK) break;
         }
         printf("request %d (voucher for %llu) -> %ld %s\n", i, (unsigned long long)total, status, ex->body);
         if (status != 200) return 1;
+        paid = total;
     }
 
+    if (state_path && n > 0) {
+        printf("channel kept open in %s: run again to continue, or with --session 0 to close it\n", state_path);
+        return 0;
+    }
     err = trp_session_close(&s, &ch, opt->signer, credential, sizeof(credential), work, sizeof(work));
     if (err != TRP_OK) {
         fprintf(stderr, "could not close (%d)\n", (int)err);
         return 1;
     }
+    if (save_state(state_path, &s) != 0) return 1;
     status = send_credential(url, &ch, credential, ex);
-    printf("close at %llu -> %ld %s\n", (unsigned long long)(price * (uint64_t)n), status, ex->body);
+    printf("close at %llu -> %ld %s\n", (unsigned long long)paid, status, ex->body);
     print_receipt(ex);
     return status == 200 || status == 204 ? 0 : 1;
 }
@@ -336,15 +462,20 @@ int main(int argc, char **argv)
     trp_err_t err;
     long status;
     uint64_t now;
+    const char *state_path = NULL;
     int sessions = 0, rc;
 
-    if (argc == 4 && strcmp(argv[1], "--session") == 0 && atoi(argv[2]) > 0) {
+    if (argc == 6 && strcmp(argv[1], "--session") == 0 && strcmp(argv[3], "--state") == 0 && atoi(argv[2]) >= 0) {
+        sessions = atoi(argv[2]);
+        state_path = argv[4];
+        url = argv[5];
+    } else if (argc == 4 && strcmp(argv[1], "--session") == 0 && atoi(argv[2]) > 0) {
         sessions = atoi(argv[2]);
         url = argv[3];
     } else if (argc == 2) {
         url = argv[1];
     } else {
-        fprintf(stderr, "usage: %s [--session <requests>] <url>\n", argv[0]);
+        fprintf(stderr, "usage: %s [--session <requests> [--state <file>]] <url>\n", argv[0]);
         return 2;
     }
     hex_env("TRP_OWNER", owner, sizeof(owner));
@@ -358,6 +489,7 @@ int main(int argc, char **argv)
         return status == 200 ? 0 : 1;
     }
 
+    if (state_path && sessions == 0) sessions = -1; /* close only */
     if (sessions ? load_signer("TRP_SESSION_KEY", "TRP_SESSION_ENCLAVE_KEY", &signer, &key)
                  : load_signer("TRP_DEVICE_KEY", "TRP_ENCLAVE_KEY", &signer, &key))
         return 1;
@@ -386,7 +518,7 @@ int main(int argc, char **argv)
     opt.client_id.len = 11;
 
     if (sessions) {
-        rc = run_session(url, sessions, &opt, &ex);
+        rc = run_session(url, sessions < 0 ? 0 : sessions, state_path, &opt, &ex);
         if (key.key) trp_mbedtls_signer_free(&key);
         curl_global_cleanup();
         return rc;

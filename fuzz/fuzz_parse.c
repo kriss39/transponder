@@ -1,6 +1,8 @@
 /*
  * Fuzz the parsers that read what a server sends: WWW-Authenticate,
- * Payment-Receipt and JSON. The first byte picks the parser.
+ * Payment-Receipt and JSON, and what a device reads back after a restart:
+ * a saved session and the RPC's answer about its channel. The first byte
+ * picks the parser.
  *
  *   make fuzz && ./build/fuzz_parse fuzz/corpus/parse -dict=fuzz/mpp.dict
  */
@@ -54,6 +56,36 @@ static void walk(const trp_json *v, int depth)
     }
 }
 
+/* A saved session must load to the same bytes; a sync must keep the session's invariants. */
+static void restart(const uint8_t *data, size_t size, int sync)
+{
+    static trp_session s;
+    trp_session before;
+    uint8_t again[TRP_SESSION_STATE_LEN];
+    trp_err_t err;
+
+    if (!sync) {
+        if (trp_session_load(&s, data, size) != TRP_OK) return;
+        trp_session_save(&s, again);
+        if (memcmp(again, data, sizeof(again)) != 0) abort();
+        return;
+    }
+    memset(&s, 0, sizeof(s));
+    s.deposit[31] = 100;
+    s.pending_top_up[31] = 50;
+    s.cumulative[31] = 40;
+    s.tx_valid_before = 1000;
+    before = s;
+    err = trp_session_sync(&s, (const char *)data, size, size & 1 ? 1000 : 2000);
+    if (err != TRP_OK) {
+        if (memcmp(&s, &before, sizeof(s)) != 0) abort(); /* failures change nothing */
+        return;
+    }
+    if (s.pending_top_up[31] != 0) abort();
+    if (!s.closed && memcmp(s.cumulative, s.deposit, 32) > 0) abort();
+    if (memcmp(s.cumulative, before.cumulative, 32) < 0) abort(); /* never down */
+}
+
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
 {
     trp_challenge ch;
@@ -67,6 +99,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     if (size < 1 || size > MAX_INPUT) return 0;
     text = (const char *)data + 1;
     len = size - 1;
+    if (data[0] >= 0xfe) {
+        restart(data + 1, len, data[0] == 0xff);
+        return 0;
+    }
 
     switch (data[0] % 4) {
     case 0:

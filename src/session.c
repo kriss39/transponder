@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "transponder/credential.h"
+#include "transponder/hex.h"
 #include "transponder/json.h"
 #include "transponder/keccak.h"
 #include "internal.h"
@@ -433,6 +434,7 @@ trp_err_t trp_session_open(const trp_challenge *ch, const trp_charge_options *op
     trp__jw_address(&w, next.descriptor.authorized_signer);
     trp_jw_object_end(&w);
     if ((err = finish(ch, &next, &w, &b, out, out_cap)) != TRP_OK) return err;
+    next.tx_valid_before = tx.valid_before;
     *s = next;
     return TRP_OK;
 }
@@ -537,6 +539,7 @@ trp_err_t trp_session_top_up(trp_session *s, const trp_challenge *ch, const trp_
     if ((err = finish(ch, s, &w, &b, out, out_cap)) != TRP_OK) return err;
     /* Counted once the server has accepted it: see trp_session_top_up_confirmed. */
     memcpy(s->pending_top_up, additional, TRP_U256_LEN);
+    s->tx_valid_before = tx.valid_before;
     return TRP_OK;
 }
 
@@ -593,5 +596,192 @@ trp_err_t trp_session_close(trp_session *s, const trp_challenge *ch, const trp_s
     trp_jw_object_end(&w);
     if ((err = finish(ch, s, &w, &b, out, out_cap)) != TRP_OK) return err;
     s->closed = 1; /* no more vouchers; closing again is allowed */
+    return TRP_OK;
+}
+
+/* ---- keeping a session across restarts ------------------------------------ */
+
+#define STATE_VERSION 1
+#define STATE_CHECKSUM_LEN 4
+
+static uint8_t *put(uint8_t *p, const uint8_t *src, size_t n)
+{
+    memcpy(p, src, n);
+    return p + n;
+}
+
+static const uint8_t *get(const uint8_t *p, uint8_t *dst, size_t n)
+{
+    memcpy(dst, p, n);
+    return p + n;
+}
+
+static uint8_t *put_u64(uint8_t *p, uint64_t v)
+{
+    int i;
+    for (i = 0; i < 8; i++) p[i] = (uint8_t)(v >> (56 - 8 * i));
+    return p + 8;
+}
+
+static const uint8_t *get_u64(const uint8_t *p, uint64_t *v)
+{
+    int i;
+    *v = 0;
+    for (i = 0; i < 8; i++) *v = (*v << 8) | p[i];
+    return p + 8;
+}
+
+void trp_session_save(const trp_session *s, uint8_t out[TRP_SESSION_STATE_LEN])
+{
+    const trp_channel_descriptor *d = &s->descriptor;
+    uint8_t *p = out, sum[32];
+
+    p = put(p, (const uint8_t *)"TRPS", 4);
+    *p++ = STATE_VERSION;
+    p = put_u64(p, s->chain_id);
+    p = put(p, s->escrow, TRP_ADDRESS_LEN);
+    p = put(p, d->payer, TRP_ADDRESS_LEN);
+    p = put(p, d->payee, TRP_ADDRESS_LEN);
+    p = put(p, d->operator_, TRP_ADDRESS_LEN);
+    p = put(p, d->token, TRP_ADDRESS_LEN);
+    p = put(p, d->salt, 32);
+    p = put(p, d->authorized_signer, TRP_ADDRESS_LEN);
+    p = put(p, d->expiring_nonce_hash, 32);
+    p = put(p, s->channel_id, 32);
+    p = put(p, s->deposit, TRP_U256_LEN);
+    p = put(p, s->pending_top_up, TRP_U256_LEN);
+    p = put(p, s->cumulative, TRP_U256_LEN);
+    *p++ = s->closed ? 1 : 0;
+    p = put_u64(p, s->tx_valid_before);
+    trp_keccak256(out, (size_t)(p - out), sum);
+    memcpy(p, sum, STATE_CHECKSUM_LEN);
+}
+
+trp_err_t trp_session_load(trp_session *s, const uint8_t *in, size_t len)
+{
+    trp_session next;
+    trp_channel_descriptor *d = &next.descriptor;
+    const uint8_t *p = in;
+    uint8_t sum[32], id[32];
+
+    if (!s || !in || len != TRP_SESSION_STATE_LEN) return TRP_ERR_INVALID;
+    trp_keccak256(in, len - STATE_CHECKSUM_LEN, sum);
+    if (memcmp(in + len - STATE_CHECKSUM_LEN, sum, STATE_CHECKSUM_LEN) != 0) return TRP_ERR_INVALID;
+    if (memcmp(p, "TRPS", 4) != 0 || p[4] != STATE_VERSION) return TRP_ERR_INVALID;
+    p += 5;
+
+    memset(&next, 0, sizeof(next));
+    p = get_u64(p, &next.chain_id);
+    p = get(p, next.escrow, TRP_ADDRESS_LEN);
+    p = get(p, d->payer, TRP_ADDRESS_LEN);
+    p = get(p, d->payee, TRP_ADDRESS_LEN);
+    p = get(p, d->operator_, TRP_ADDRESS_LEN);
+    p = get(p, d->token, TRP_ADDRESS_LEN);
+    p = get(p, d->salt, 32);
+    p = get(p, d->authorized_signer, TRP_ADDRESS_LEN);
+    p = get(p, d->expiring_nonce_hash, 32);
+    p = get(p, next.channel_id, 32);
+    p = get(p, next.deposit, TRP_U256_LEN);
+    p = get(p, next.pending_top_up, TRP_U256_LEN);
+    p = get(p, next.cumulative, TRP_U256_LEN);
+    if (*p > 1) return TRP_ERR_INVALID;
+    next.closed = *p++;
+    get_u64(p, &next.tx_valid_before);
+
+    /* Only what open could have produced. */
+    trp_channel_id(d, next.escrow, next.chain_id, id);
+    if (memcmp(id, next.channel_id, 32) != 0 || !fits_u96(next.deposit) || !fits_u96(next.pending_top_up) ||
+        memcmp(next.cumulative, next.deposit, 32) > 0)
+        return TRP_ERR_INVALID;
+    *s = next;
+    return TRP_OK;
+}
+
+/* getChannelState(bytes32) -> (uint96 settled, uint96 deposit, uint32 closeRequestedAt) */
+#define STATE_RESULT_LEN (3 * 32)
+
+trp_err_t trp_session_state_request(const trp_session *s, char *out, size_t out_cap)
+{
+    static const char head[] = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":\"";
+    static const char mid[] = "\",\"data\":\"";
+    static const char tail[] = "\"},\"latest\"]}";
+    uint8_t calldata[4 + 32], selector[32];
+    char *p = out;
+
+    if (!s || !out) return TRP_ERR_INVALID;
+    if (out_cap < sizeof(head) - 1 + 42 + sizeof(mid) - 1 + 2 + 2 * sizeof(calldata) + sizeof(tail))
+        return TRP_ERR_BUFFER;
+    keccak_text("getChannelState(bytes32)", selector);
+    memcpy(calldata, selector, 4);
+    memcpy(calldata + 4, s->channel_id, 32);
+
+    memcpy(p, head, sizeof(head) - 1);
+    p += sizeof(head) - 1;
+    trp_hex_encode(s->escrow, TRP_ADDRESS_LEN, 1, p, 43);
+    p += 42;
+    memcpy(p, mid, sizeof(mid) - 1);
+    p += sizeof(mid) - 1;
+    trp_hex_encode(calldata, sizeof(calldata), 1, p, 2 + 2 * sizeof(calldata) + 1);
+    p += 2 + 2 * sizeof(calldata);
+    memcpy(p, tail, sizeof(tail)); /* with its NUL */
+    return TRP_OK;
+}
+
+/* A word that holds an unsigned integer of `bits` bits. */
+static int word_fits(const uint8_t w[32], int bits)
+{
+    return trp__is_zero(w, (size_t)(32 - bits / 8));
+}
+
+static void add_u256(const uint8_t a[32], const uint8_t b[32], uint8_t out[32], unsigned *carry_out)
+{
+    unsigned carry = 0;
+    int i;
+    for (i = 31; i >= 0; i--) {
+        unsigned v = (unsigned)a[i] + b[i] + carry;
+        out[i] = (uint8_t)v;
+        carry = v >> 8;
+    }
+    *carry_out = carry;
+}
+
+trp_err_t trp_session_sync(trp_session *s, const char *response, size_t len, uint64_t now)
+{
+    trp_json root, result;
+    char hex[2 + 2 * STATE_RESULT_LEN + 1];
+    uint8_t state[STATE_RESULT_LEN], expected[32];
+    const uint8_t *settled = state, *deposit = state + 32, *close_requested = state + 64;
+    size_t hex_len, got;
+    unsigned carry;
+    int in_flight;
+
+    if (!s || !response) return TRP_ERR_INVALID;
+    if (trp_json_parse(response, len, &root) != TRP_OK || root.type != TRP_JSON_OBJECT ||
+        trp_json_get(&root, "result", &result) != TRP_OK ||
+        trp_json_get_string(&result, hex, sizeof(hex), &hex_len) != TRP_OK || hex_len != sizeof(hex) - 1 ||
+        hex[0] != '0' || (hex[1] != 'x' && hex[1] != 'X') ||
+        trp_hex_decode(hex, hex_len, state, sizeof(state), &got) != TRP_OK || got != sizeof(state))
+        return TRP_ERR_INVALID;
+    if (!word_fits(settled, 96) || !word_fits(deposit, 96) || !word_fits(close_requested, 32))
+        return TRP_ERR_INVALID;
+
+    /* Could the last open or top-up still land? Then the chain is not the last word yet. */
+    in_flight = s->tx_valid_before != 0 && now <= s->tx_valid_before + TRP_SESSION_SYNC_MARGIN;
+    add_u256(s->deposit, s->pending_top_up, expected, &carry);
+
+    if (trp__is_zero(deposit, 32)) {
+        /* Closed, or the open has not landed. */
+        if (in_flight && !s->closed) return TRP_ERR_PENDING;
+        s->closed = 1;
+        memset(s->pending_top_up, 0, TRP_U256_LEN);
+        return TRP_OK;
+    }
+    if (!trp__is_zero(s->pending_top_up, TRP_U256_LEN) && memcmp(deposit, expected, 32) < 0 && in_flight)
+        return TRP_ERR_PENDING;
+
+    memcpy(s->deposit, deposit, TRP_U256_LEN);
+    memset(s->pending_top_up, 0, TRP_U256_LEN);
+    if (memcmp(settled, s->cumulative, 32) > 0) memcpy(s->cumulative, settled, TRP_U256_LEN);
+    if (!trp__is_zero(close_requested, 32) || memcmp(s->cumulative, s->deposit, 32) > 0) s->closed = 1;
     return TRP_OK;
 }

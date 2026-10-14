@@ -329,8 +329,153 @@ static void test_selectors(void)
     CHECK_HEX(h, 4, "dc48471e");
 }
 
+/* A JSON-RPC response carrying getChannelState's result. */
+static const char *state_response(uint64_t settled, uint64_t deposit, uint32_t close_requested)
+{
+    static char buf[300];
+    snprintf(buf, sizeof(buf),
+             "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0x%064llx%064llx%064lx\"}", (unsigned long long)settled,
+             (unsigned long long)deposit, (unsigned long)close_requested);
+    return buf;
+}
+
+/* Change byte `at` of a saved session and seal it with a valid checksum again. */
+static void tamper(const uint8_t *state, size_t at, uint8_t value, uint8_t out[TRP_SESSION_STATE_LEN])
+{
+    uint8_t sum[32];
+    memcpy(out, state, TRP_SESSION_STATE_LEN);
+    out[at] = value;
+    trp_keccak256(out, TRP_SESSION_STATE_LEN - 4, sum);
+    memcpy(out + TRP_SESSION_STATE_LEN - 4, sum, 4);
+}
+
+/* An open channel with a voucher of 250 and a pending top-up of 500000, as in test_flow. */
+static void open_pending(fixture *f, trp_challenge *ch, trp_session *s)
+{
+    uint8_t deposit[32], salt[32], amount[32];
+
+    setup(f);
+    u256(SV_DEPOSIT, deposit);
+    unhex(SV_SALT, salt, 32);
+    CHECK(trp_challenge_parse(SV_WIRE, strlen(SV_WIRE), ch, scratch, sizeof(scratch)) == TRP_OK);
+    CHECK(trp_session_open(ch, &f->opt, deposit, salt, s, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(s->tx_valid_before == SV_NOW + 20); /* the challenge's expires caps valid_before */
+    s->tx_valid_before = 0;                   /* so the top-up must set it again */
+    u256(SV_VOUCHER, amount);
+    CHECK(trp_session_voucher(s, ch, &f->signer, amount, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    u256(SV_ADDITIONAL, amount);
+    CHECK(trp_session_top_up(s, ch, &f->opt, amount, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+}
+
+static void test_restart(void)
+{
+    fixture f;
+    trp_challenge ch;
+    trp_session s, back;
+    uint8_t state[TRP_SESSION_STATE_LEN], again[TRP_SESSION_STATE_LEN], want[32], amount[32];
+    char body[256], expected[256];
+    const uint64_t expires = SV_NOW + 20; /* the challenge's expires caps valid_before */
+    const uint64_t later = expires + TRP_SESSION_SYNC_MARGIN + 1;
+    const char *r;
+
+    open_pending(&f, &ch, &s);
+    CHECK(s.tx_valid_before == expires);
+
+    /* Save and load round-trip; anything else is refused. */
+    trp_session_save(&s, state);
+    CHECK(trp_session_load(&back, state, sizeof(state)) == TRP_OK);
+    trp_session_save(&back, again);
+    CHECK(memcmp(state, again, sizeof(state)) == 0);
+    CHECK(memcmp(back.channel_id, s.channel_id, 32) == 0 && back.tx_valid_before == s.tx_valid_before);
+    CHECK(trp_session_load(&back, state, sizeof(state) - 1) == TRP_ERR_INVALID);
+    state[100] ^= 1;
+    CHECK(trp_session_load(&back, state, sizeof(state)) == TRP_ERR_INVALID);
+    state[100] ^= 1;
+    /* Well sealed but impossible: another version, a changed descriptor, a voucher past the deposit, closed = 2. */
+    tamper(state, 4, 2, again);
+    CHECK(trp_session_load(&back, again, sizeof(again)) == TRP_ERR_INVALID);
+    tamper(state, 100, (uint8_t)(state[100] ^ 1), again);
+    CHECK(trp_session_load(&back, again, sizeof(again)) == TRP_ERR_INVALID);
+    tamper(state, 293 + 20, 0xff, again);
+    CHECK(trp_session_load(&back, again, sizeof(again)) == TRP_ERR_INVALID);
+    tamper(state, 325, 2, again);
+    CHECK(trp_session_load(&back, again, sizeof(again)) == TRP_ERR_INVALID);
+    tamper(state, 325, 1, again);
+    CHECK(trp_session_load(&back, again, sizeof(again)) == TRP_OK && back.closed == 1);
+
+    /* The read the device sends, checked against viem's encoding. */
+    snprintf(expected, sizeof(expected),
+             "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_call\",\"params\":[{\"to\":"
+             "\"0x4d50500000000000000000000000000000000000\",\"data\":\"0x%s\"},\"latest\"]}",
+             SV_STATE_CALLDATA);
+    CHECK(trp_session_state_request(&back, body, sizeof(body)) == TRP_OK);
+    CHECK(strcmp(body, expected) == 0);
+    CHECK(trp_session_state_request(&back, body, strlen(expected)) == TRP_ERR_BUFFER);
+
+    /* The top-up landed: the chain shows it (viem-encoded result: settled 200, deposit 1500000). */
+    snprintf(body, sizeof(body), "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0x%s\"}", SV_STATE_RESULT);
+    CHECK(trp_session_load(&back, state, sizeof(state)) == TRP_OK);
+    CHECK(trp_session_sync(&back, body, strlen(body), SV_NOW) == TRP_OK);
+    u256("1500000", want);
+    CHECK(memcmp(back.deposit, want, 32) == 0 && is_zero(back.pending_top_up));
+    u256(SV_VOUCHER, want);
+    CHECK(memcmp(back.cumulative, want, 32) == 0 && back.closed == 0);
+    /* And the restored session signs the same voucher again, byte for byte. */
+    u256(SV_VOUCHER, amount);
+    CHECK(trp_session_voucher(&back, &ch, &f.signer, amount, header, 4096, work, 4608) == TRP_OK);
+    matches(header, SV_VOUCHER_HEADER, "restored voucher");
+
+    /* The top-up is not on chain: pending while it could land, failed after. */
+    CHECK(trp_session_load(&back, state, sizeof(state)) == TRP_OK);
+    r = state_response(200, 1000000, 0);
+    CHECK(trp_session_sync(&back, r, strlen(r), SV_NOW) == TRP_ERR_PENDING);
+    CHECK(trp_session_sync(&back, r, strlen(r), expires + 1) == TRP_ERR_PENDING); /* RPC nodes may lag */
+    trp_session_save(&back, again);
+    CHECK(memcmp(state, again, sizeof(state)) == 0); /* unchanged */
+    CHECK(trp_session_sync(&back, r, strlen(r), later) == TRP_OK);
+    u256(SV_DEPOSIT, want);
+    CHECK(memcmp(back.deposit, want, 32) == 0 && is_zero(back.pending_top_up) && back.closed == 0);
+
+    /* The server settled past the saved voucher: the cumulative follows. */
+    CHECK(trp_session_load(&back, state, sizeof(state)) == TRP_OK);
+    r = state_response(300, 1500000, 0);
+    CHECK(trp_session_sync(&back, r, strlen(r), SV_NOW) == TRP_OK);
+    u256("300", want);
+    CHECK(memcmp(back.cumulative, want, 32) == 0);
+
+    /* No deposit: the open may still land; after that the channel is gone. */
+    CHECK(trp_session_load(&back, state, sizeof(state)) == TRP_OK);
+    r = state_response(0, 0, 0);
+    CHECK(trp_session_sync(&back, r, strlen(r), SV_NOW) == TRP_ERR_PENDING);
+    CHECK(trp_session_sync(&back, r, strlen(r), later) == TRP_OK);
+    CHECK(back.closed == 1 && is_zero(back.pending_top_up));
+    trp_session_save(&back, again);
+    CHECK(trp_session_load(&back, again, sizeof(again)) == TRP_OK && back.closed == 1);
+    u256("300", amount);
+    CHECK(trp_session_voucher(&back, &ch, &f.signer, amount, header, sizeof(header), work, sizeof(work)) ==
+          TRP_ERR_INVALID);
+
+    /* A close request on chain ends the channel for the device too. */
+    CHECK(trp_session_load(&back, state, sizeof(state)) == TRP_OK);
+    r = state_response(200, 1500000, 1791975000u);
+    CHECK(trp_session_sync(&back, r, strlen(r), SV_NOW) == TRP_OK);
+    CHECK(back.closed == 1);
+
+    /* Errors and malformed results change nothing. */
+    CHECK(trp_session_load(&back, state, sizeof(state)) == TRP_OK);
+    r = "{\"jsonrpc\":\"2.0\",\"id\":1,\"error\":{\"code\":-32000,\"message\":\"x\"}}";
+    CHECK(trp_session_sync(&back, r, strlen(r), SV_NOW) == TRP_ERR_INVALID);
+    r = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0x\"}";
+    CHECK(trp_session_sync(&back, r, strlen(r), SV_NOW) == TRP_ERR_INVALID);
+    snprintf(body, sizeof(body), "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0x01%s\"}", &SV_STATE_RESULT[2]);
+    CHECK(trp_session_sync(&back, body, strlen(body), SV_NOW) == TRP_ERR_INVALID); /* settled over 96 bits */
+    trp_session_save(&back, again);
+    CHECK(memcmp(state, again, sizeof(state)) == 0);
+}
+
 void test_session(void)
 {
+    test_restart();
     test_flow();
     test_rules();
     test_state();

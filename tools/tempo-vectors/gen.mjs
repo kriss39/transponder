@@ -512,6 +512,16 @@ out.push(`#define SV_OPEN ${cs(openHeader)}`)
 out.push(`#define SV_VOUCHER_HEADER ${cs(voucherHeader)}`)
 out.push(`#define SV_TOP_UP ${cs(topUpHeader)}`)
 out.push(`#define SV_CLOSE ${cs(closeHeader)}`)
+// Reading a channel back after a restart: getChannelState(channelId) and an
+// encoded result (settled 200, deposit 1500000, no close request), as viem's
+// readContract would send and decode them.
+const getChannelState = AbiFunction.from(
+  'function getChannelState(bytes32 channelId) view returns ((uint96 settled, uint96 deposit, uint32 closeRequestedAt))',
+)
+out.push(`#define SV_STATE_CALLDATA ${hex(AbiFunction.encodeData(getChannelState, [channelId]))}`)
+out.push(
+  `#define SV_STATE_RESULT ${hex(AbiFunction.encodeResult(getChannelState, { settled: 200n, deposit: 1500000n, closeRequestedAt: 0 }))}`,
+)
 out.push('static const char *const SV_SIGNINGS[][3] = { /* digest, r, s */')
 for (const [d, sig] of signings)
   out.push(`    {${hex(d)}, ${hex(Hex.fromNumber(sig.r, { size: 32 }))}, ${hex(Hex.fromNumber(sig.s, { size: 32 }))}},`)

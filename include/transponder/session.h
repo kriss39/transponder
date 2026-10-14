@@ -79,7 +79,8 @@ typedef struct {
     uint8_t deposit[TRP_U256_LEN];        /* total deposit the server has accepted */
     uint8_t pending_top_up[TRP_U256_LEN]; /* signed, not yet confirmed; zero when none */
     uint8_t cumulative[TRP_U256_LEN];     /* highest voucher signed so far */
-    int closed;                           /* a close was signed: no more vouchers */
+    int closed;                           /* closed, or not usable: no more vouchers */
+    uint64_t tx_valid_before;             /* valid_before of the last open or top-up signed */
 } trp_session;
 
 /*
@@ -136,6 +137,51 @@ void trp_session_top_up_failed(trp_session *session);
 trp_err_t trp_session_close(trp_session *session, const trp_challenge *challenge,
                             const trp_signer *signer, char *out, size_t out_cap, uint8_t *work,
                             size_t work_cap);
+
+/*
+ * Keeping a session across restarts. A device that reboots mid-session
+ * would otherwise lose the channel and its deposit stays locked until the
+ * server closes it. Save the session to flash after every call that signs
+ * (open, voucher, top-up, close) and before the credential is sent, and
+ * after top_up_confirmed or _failed: then the saved cumulative is never
+ * below what the server holds. After a restart, load it and sync it with
+ * the chain before signing again.
+ */
+#define TRP_SESSION_STATE_LEN 338
+#define TRP_SESSION_SYNC_MARGIN 60
+
+/* Serialize `session` (versioned, with a checksum) for flash. */
+void trp_session_save(const trp_session *session, uint8_t out[TRP_SESSION_STATE_LEN]);
+
+/* Restore a saved session. INVALID for anything trp_session_save did not write, or that was corrupted. */
+trp_err_t trp_session_load(trp_session *session, const uint8_t *state, size_t len);
+
+/*
+ * The JSON-RPC request body that reads the channel from the escrow:
+ * eth_call of getChannelState(channelId) at "latest". POST it to any Tempo
+ * RPC endpoint and pass the response to trp_session_sync.
+ */
+trp_err_t trp_session_state_request(const trp_session *session, char *out, size_t out_cap);
+
+/*
+ * Bring `session` in line with the chain, from the JSON-RPC response to
+ * trp_session_state_request. `now` is Unix time.
+ *
+ * - The chain's deposit replaces the session's. A pending top-up that the
+ *   deposit includes is confirmed; one that is missing once its transaction
+ *   has expired failed.
+ * - A channel with no deposit (closed, or its open never landed) or with a
+ *   close request is marked closed: open a new one.
+ * - If the server has settled more than the saved cumulative, the
+ *   cumulative rises to it.
+ *
+ * TRP_ERR_PENDING, with the session unchanged, while the last open or
+ * top-up could still land: until TRP_SESSION_SYNC_MARGIN seconds after its
+ * tx_valid_before, which is at most 25 seconds after signing (the margin
+ * covers RPC nodes that lag behind). Ask again after that. INVALID for an RPC error or a malformed
+ * result.
+ */
+trp_err_t trp_session_sync(trp_session *session, const char *response, size_t len, uint64_t now);
 
 #ifdef __cplusplus
 }

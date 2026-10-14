@@ -24,6 +24,7 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 - [x] Proofs: a zero-amount challenge is answered with a signed EIP-712 proof of the account the device pays for, and nothing is paid; accepted by a stock mppx server
 - [x] Spending policy checked on the device before it signs: amount cap, token, recipient and chain allow-lists
 - [x] Tempo `session` (v2, the TIP-1034 channel escrow precompile): open, vouchers, top-up and close, all signed by the same P-256 key, credentials byte-identical to ox, run end to end against a stock mppx server on Moderato
+- [x] Sessions survive a restart: the device saves the channel (338 bytes) before every credential, reads it back from the escrow after a reboot and carries on; tried on Moderato with a Secure Enclave key
 - [x] Software P-256 signer on the PSA Crypto API (mbedTLS 3.x and 4.x)
 - [x] Apple Secure Enclave signer (`ports/apple`): a hardware-held key on any Apple-silicon Mac
 - [x] ATECC608A signer (`ports/atecc608`), compiled in CI; not yet run on a chip
@@ -32,7 +33,7 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 - [ ] On hardware: an ESP32-WROOM-32SE (ATECC608A built in) pays a live MPP endpoint on Tempo testnet
 - [x] Passes the official [tempoxyz/mpp-tools](https://github.com/tempoxyz/mpp-tools) conformance runner: 121/121 vector checks, through the adapter in [`tools/conformance`](tools/conformance)
 
-The design, including the transaction layout and signing rules, is in [docs/DESIGN.md](docs/DESIGN.md).
+How to use the library is in [docs/API.md](docs/API.md); the design, including the transaction layout and signing rules, is in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Build and test on a computer
 
@@ -70,6 +71,14 @@ Pay per request through a session instead: one deposit on chain, then a signed v
 
 ```sh
 ./build/pay --session 5 http://127.0.0.1:8402/stream   # 0.001 AlphaUSD per reading
+```
+
+Keep the channel across runs, as a device keeps it across reboots. Each run reads the channel back from the chain and continues it:
+
+```sh
+./build/pay --session 2 --state channel.bin http://127.0.0.1:8402/stream   # opens, keeps it open
+./build/pay --session 3 --state channel.bin http://127.0.0.1:8402/stream   # continues, tops up when needed
+./build/pay --session 0 --state channel.bin http://127.0.0.1:8402/stream   # closes it
 ```
 
 On an Apple-silicon Mac, sign with a key in the Secure Enclave instead:

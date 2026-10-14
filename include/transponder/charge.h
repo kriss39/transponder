@@ -52,8 +52,9 @@ typedef struct {
 
 /*
  * Read a Tempo charge challenge's request. TRP_ERR_UNSUPPORTED for what
- * this version does not do: zero-amount (proof) charges, push-only
- * challenges, and more than TRP_MAX_SPLITS splits.
+ * this version does not do: push-only challenges and more than
+ * TRP_MAX_SPLITS splits. An amount of zero parses; trp_tempo_charge
+ * answers it with a proof.
  */
 trp_err_t trp_charge_request_parse(const trp_challenge *challenge, trp_charge_request *out);
 

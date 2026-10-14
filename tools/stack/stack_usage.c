@@ -125,6 +125,17 @@ static trp_err_t job_close(void)
     return trp_session_close(&session, &ch, &signer, out, sizeof(out), work, sizeof(work));
 }
 
+/* After a restart: load the saved session, then sync it with the chain's answer. */
+static trp_err_t job_restore(void)
+{
+    static const char response[] = "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"0x" SV_STATE_RESULT "\"}";
+    uint8_t state[TRP_SESSION_STATE_LEN];
+    trp_err_t err;
+    trp_session_save(&session, state);
+    if ((err = trp_session_load(&session, state, sizeof(state))) != TRP_OK) return err;
+    return trp_session_sync(&session, response, sizeof(response) - 1, SV_NOW);
+}
+
 typedef struct {
     const char *name;
     trp_err_t (*run)(void);
@@ -148,6 +159,7 @@ int main(void)
         {"trp_session_voucher", job_voucher, TRP_OK},
         {"trp_session_top_up", job_top_up, TRP_OK},
         {"trp_session_close", job_close, TRP_OK},
+        {"trp_session_load + _sync", job_restore, TRP_OK},
     };
     void *stack;
     size_t i, used;
