@@ -56,9 +56,9 @@ The device uses **pull mode**: it signs and the server broadcasts. That keeps th
 | Tempo | session v2 (TIP-1034 channel escrow precompile): open, voucher, top-up, close | done, credentials identical to ox; run end to end on Moderato, with a Secure Enclave key too |
 | Signers | software P-256 (mbedTLS PSA API, `ports/mbedtls`) for host tests and boards without a secure element | done, signatures identical to ox |
 | Signers | Apple Secure Enclave through CryptoKit (`ports/apple`, pre-hashed P-256) | done, paid on Moderato |
-| Signers | ATECC608A through cryptoauthlib | |
+| Signers | ATECC608A through cryptoauthlib (`ports/atecc608`) | done, builds on ESP-IDF; not yet run on a chip |
 | Platform | host demo with libcurl (`examples/host-pay`) | done, paid on Moderato |
-| Platform | ESP-IDF: HTTP client, time, JSON-RPC calls | |
+| Platform | ESP-IDF example: Wi-Fi, SNTP, esp_http_client, the 402 flow (`examples/esp32-pay`) | builds in CI on ESP-IDF v5.5 and v6.0; not yet on hardware |
 | MPP core | `Payment-Receipt` parser | done |
 | Conformance | mpp-tools adapter (JSON ABI described in `HARNESS_SPEC.md`) | done, 121/121 on the official runner |
 | Robustness | libFuzzer targets for the parsers and the whole payment path (`fuzz/`), in CI | done |

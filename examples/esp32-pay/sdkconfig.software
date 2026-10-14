@@ -1,0 +1,2 @@
+# Build with a software key instead of the ATECC608A (boards without a secure element; testnet only).
+CONFIG_TRP_SIGNER_SOFTWARE=y

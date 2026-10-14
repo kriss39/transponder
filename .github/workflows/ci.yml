@@ -39,3 +39,21 @@ jobs:
       - name: Fuzz
         run: make fuzz-run FUZZ_CC=clang FUZZ_TIME=60
 
+  esp-idf:
+    # The ESP32 example compiles against ESP-IDF, with either signer.
+    strategy:
+      fail-fast: false
+      matrix:
+        idf: [v5.5, v6.0]
+        signer: [atecc608, software]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use the software signer
+        if: matrix.signer == 'software'
+        run: cat examples/esp32-pay/sdkconfig.software >> examples/esp32-pay/sdkconfig.defaults
+      - uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ matrix.idf }}
+          target: esp32
+          path: examples/esp32-pay

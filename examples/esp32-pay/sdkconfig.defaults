@@ -1,0 +1,6 @@
+# The paying task builds the credential with static buffers, but leave room.
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
+CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+# Wi-Fi, HTTPS and the secure-element driver need more than the default 1 MB app partition.
+CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y

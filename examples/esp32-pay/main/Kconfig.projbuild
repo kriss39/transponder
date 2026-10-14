@@ -1,0 +1,85 @@
+menu "Transponder example"
+
+    config TRP_WIFI_SSID
+        string "Wi-Fi network"
+        default ""
+
+    config TRP_WIFI_PASSWORD
+        string "Wi-Fi password"
+        default ""
+
+    config TRP_URL
+        string "URL to pay for"
+        default "http://192.168.1.10:8402/reading"
+        help
+            An MPP endpoint that answers 402 with a Tempo charge challenge, for
+            example tools/testnet/server.mjs started with HOST=0.0.0.0.
+
+    config TRP_OWNER
+        string "Owner account (0x...)"
+        default ""
+        help
+            The account that authorized this device's key as an access key.
+
+    choice TRP_SIGNER
+        prompt "Where the device key lives"
+        default TRP_SIGNER_ATECC608
+
+        config TRP_SIGNER_ATECC608
+            bool "ATECC608A secure element (ESP32-WROOM-32SE)"
+            help
+                The key is generated in the chip and never leaves it. Set the
+                chip type, I2C pins and address under Component config ->
+                esp-cryptoauthlib.
+
+        config TRP_SIGNER_SOFTWARE
+            bool "Software key in flash (testnet only)"
+            help
+                A P-256 private key in the firmware, signed with mbedTLS. Only
+                for boards without a secure element, and only on testnet.
+    endchoice
+
+    config TRP_ATECC608_SLOT
+        int "ATECC608A key slot"
+        default 0
+        depends on TRP_SIGNER_ATECC608
+
+    config TRP_DEVICE_KEY
+        string "Device P-256 private key, 64 hex digits (testnet only)"
+        default ""
+        depends on TRP_SIGNER_SOFTWARE
+
+    config TRP_CHAIN_ID
+        int "The only chain to pay on"
+        default 42431
+        help
+            42431 is the Moderato testnet; 4217 is Tempo mainnet.
+
+    config TRP_MAX_AMOUNT
+        string "Most to pay per request, in base units"
+        default "100000"
+        help
+            100000 is 0.10 of a 6-decimal stablecoin. The chain enforces the
+            access key's own limit as well.
+
+    config TRP_FEE_TOKEN
+        string "Token that pays network fees"
+        default "0x20c0000000000000000000000000000000000001"
+
+    config TRP_GAS
+        int "Gas limit"
+        default 400000
+
+    config TRP_MAX_FEE
+        string "Max fee per gas"
+        default "3000000000"
+
+    config TRP_PRIORITY_FEE
+        string "Max priority fee per gas"
+        default "1"
+
+    config TRP_INTERVAL_S
+        int "Seconds between requests"
+        default 60
+
+endmenu

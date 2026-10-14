@@ -22,9 +22,10 @@ Transponder lets a device pay for an API over the Machine Payments Protocol, the
 - [x] Tempo `session` (v2, the TIP-1034 channel escrow precompile): open, vouchers, top-up and close, all signed by the same P-256 key, credentials byte-identical to ox, run end to end against a stock mppx server on Moderato
 - [x] Software P-256 signer on the PSA Crypto API (mbedTLS 3.x and 4.x)
 - [x] Apple Secure Enclave signer (`ports/apple`): a hardware-held key on any Apple-silicon Mac
-- [ ] ATECC608A signer
+- [x] ATECC608A signer (`ports/atecc608`), compiled in CI; not yet run on a chip
 - [x] A first payment on Tempo testnet from a computer, through a stock mppx server
-- [ ] ESP-IDF example: an ESP32-WROOM-32SE (ATECC608A built in) pays a live MPP endpoint on Tempo testnet
+- [x] ESP-IDF example ([`examples/esp32-pay`](examples/esp32-pay)): Wi-Fi, SNTP, the 402 flow and either signer; builds in CI on ESP-IDF v5.5 and v6.0
+- [ ] On hardware: an ESP32-WROOM-32SE (ATECC608A built in) pays a live MPP endpoint on Tempo testnet
 - [x] Passes the official [tempoxyz/mpp-tools](https://github.com/tempoxyz/mpp-tools) conformance runner: 121/121 vector checks, through the adapter in [`tools/conformance`](tools/conformance)
 
 The design, including the transaction layout and signing rules, is in [docs/DESIGN.md](docs/DESIGN.md).
@@ -80,7 +81,7 @@ set -a; . .testnet/device.env; set +a
 
 ## Use with ESP-IDF
 
-The repository root is an ESP-IDF component (`CMakeLists.txt` and `idf_component.yml`). Add it under your project's `components/` directory. This path is not tested yet.
+The repository root is an ESP-IDF component (`CMakeLists.txt` and `idf_component.yml`). Depend on it from your project's `main/idf_component.yml` (`transponder: {path: <checkout>}`) or put it under `components/`. Build the signer port you use (`ports/atecc608` or `ports/mbedtls`) in your own component, as the example does. [`examples/esp32-pay`](examples/esp32-pay) is a complete firmware: CI builds it on every push, but it has not run on a board yet.
 
 ## License
 
