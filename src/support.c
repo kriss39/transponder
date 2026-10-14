@@ -114,7 +114,7 @@ trp_err_t trp_parse_rfc3339(const char *s, size_t len, uint64_t *out)
 
     if (len < 20) return TRP_ERR_INVALID;
     if (!digits(s, 4, &year) || s[4] != '-' || !digits(s + 5, 2, &month) || s[7] != '-' ||
-        !digits(s + 8, 2, &day) || (s[10] != 'T' && s[10] != 't' && s[10] != ' ') ||
+        !digits(s + 8, 2, &day) || s[10] != 'T' ||
         !digits(s + 11, 2, &hour) || s[13] != ':' || !digits(s + 14, 2, &minute) || s[16] != ':' ||
         !digits(s + 17, 2, &second))
         return TRP_ERR_INVALID;
@@ -131,7 +131,7 @@ trp_err_t trp_parse_rfc3339(const char *s, size_t len, uint64_t *out)
         if (i >= len || s[i] < '0' || s[i] > '9') return TRP_ERR_INVALID;
         while (i < len && s[i] >= '0' && s[i] <= '9') i++;
     }
-    if (i < len && (s[i] == 'Z' || s[i] == 'z')) {
+    if (i < len && s[i] == 'Z') {
         i++;
     } else if (i + 6 == len && (s[i] == '+' || s[i] == '-')) {
         if (!digits(s + i + 1, 2, &off_h) || s[i + 3] != ':' || !digits(s + i + 4, 2, &off_m) ||

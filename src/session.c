@@ -207,21 +207,44 @@ trp_err_t trp_session_request_parse(const trp_challenge *ch, trp_session_request
     } else if (err != TRP_ERR_NOT_FOUND) {
         return err;
     }
+    err = trp__json_u256(&details, "minVoucherDelta", r->min_voucher_delta);
+    if (err == TRP_OK) r->has_min_voucher_delta = 1;
+    else if (err != TRP_ERR_NOT_FOUND) return TRP_ERR_INVALID;
     return TRP_OK;
 }
 
-/* The policy speaks in charge terms: an amount to a recipient, in a token, on a chain. */
-static trp_err_t check_policy(const trp_spend_policy *policy, const trp_session_request *r,
-                              const uint8_t amount[TRP_U256_LEN])
+/*
+ * Decide on locking funds in the channel before anything is signed. The
+ * policy speaks in charge terms (an amount to a recipient, in a token, on a
+ * chain) and limits the channel's whole deposit, `channel_total`; approve
+ * sees the amount this call adds.
+ */
+static trp_err_t decide(const trp_charge_options *opt, const trp_challenge *ch, const trp_session_request *r,
+                        const uint8_t channel_total[TRP_U256_LEN], const uint8_t amount[TRP_U256_LEN])
 {
     trp_charge_request as_charge;
+    trp_err_t err;
 
     memset(&as_charge, 0, sizeof(as_charge));
-    memcpy(as_charge.amount, amount, TRP_U256_LEN);
+    memcpy(as_charge.amount, channel_total, TRP_U256_LEN);
     memcpy(as_charge.currency, r->currency, TRP_ADDRESS_LEN);
     memcpy(as_charge.recipient, r->recipient, TRP_ADDRESS_LEN);
     as_charge.chain_id = r->chain_id;
-    return trp_spend_policy_check(policy, &as_charge);
+    as_charge.fee_payer = r->fee_payer;
+    as_charge.expires = r->expires;
+    if ((err = trp_spend_policy_check(opt->policy, &as_charge)) != TRP_OK) return err;
+    memcpy(as_charge.amount, amount, TRP_U256_LEN);
+    if (opt->approve && opt->approve(opt->approve_ctx, ch, &as_charge) != TRP_OK) return TRP_ERR_DENIED;
+    return TRP_OK;
+}
+
+/* Only the channel's own key can sign its vouchers. */
+static int is_channel_signer(const trp_session *s, const trp_signer *signer)
+{
+    uint8_t address[TRP_ADDRESS_LEN];
+
+    trp_p256_address(signer->public_key, address);
+    return memcmp(address, s->descriptor.authorized_signer, TRP_ADDRESS_LEN) == 0;
 }
 
 /* ---- credentials ---------------------------------------------------------- */
@@ -300,7 +323,8 @@ static trp_err_t sign_escrow_call(const trp_challenge *ch, const trp_charge_opti
     uint64_t valid_before;
     trp_err_t err;
 
-    if (!r->fee_payer && opt->max_fee_per_gas == 0) return TRP_ERR_INVALID;
+    /* Sponsored or not, the transaction declares its fees (mppx's sponsor rejects 0). */
+    if (opt->max_fee_per_gas == 0 || opt->max_priority_fee_per_gas > opt->max_fee_per_gas) return TRP_ERR_INVALID;
     if ((err = trp__valid_before(ch, opt->now, &valid_before)) != TRP_OK) return err;
     if (opt->valid_after >= valid_before) return TRP_ERR_INVALID;
 
@@ -358,7 +382,7 @@ trp_err_t trp_session_open(const trp_challenge *ch, const trp_charge_options *op
     if (memcmp(r.escrow, TRP_CHANNEL_ESCROW, TRP_ADDRESS_LEN) != 0) return TRP_ERR_UNSUPPORTED;
     if (trp__is_zero(deposit, TRP_U256_LEN) || !fits_u96(deposit) || memcmp(deposit, r.price, 32) < 0)
         return TRP_ERR_INVALID;
-    if ((err = check_policy(opt->policy, &r, deposit)) != TRP_OK) return err;
+    if ((err = decide(opt, ch, &r, deposit, deposit)) != TRP_OK) return err;
     if ((err = carve(work, work_cap, OPEN_CALLDATA_LEN, &b)) != TRP_OK) return err;
 
     memset(&next, 0, sizeof(next));
@@ -423,10 +447,23 @@ trp_err_t trp_session_voucher(trp_session *s, const trp_challenge *ch, const trp
     uint8_t digest[32], voucher[TRP_P256_SIGNATURE_LEN];
     trp_err_t err;
 
-    if (!s || !ch || !signer || !signer->sign_digest) return TRP_ERR_INVALID;
+    if (!s || !ch || !signer || !signer->sign_digest || s->closed || !is_channel_signer(s, signer))
+        return TRP_ERR_INVALID;
     if ((err = match_challenge(ch, s, &r)) != TRP_OK) return err;
-    /* Cumulative: never down, never past what is deposited. */
+    /* Cumulative: never down, never past what is confirmed on deposit. */
     if (memcmp(cumulative, s->cumulative, 32) < 0 || memcmp(cumulative, s->deposit, 32) > 0) return TRP_ERR_INVALID;
+    /* A raise smaller than the server's minimum would only be refused. */
+    if (r.has_min_voucher_delta && memcmp(cumulative, s->cumulative, 32) != 0) {
+        uint8_t delta[TRP_U256_LEN];
+        unsigned borrow = 0;
+        int i;
+        for (i = 31; i >= 0; i--) {
+            unsigned d = (unsigned)cumulative[i] - s->cumulative[i] - borrow;
+            delta[i] = (uint8_t)d;
+            borrow = (d >> 8) & 1;
+        }
+        if (memcmp(delta, r.min_voucher_delta, 32) < 0) return TRP_ERR_INVALID;
+    }
     if ((err = carve(work, work_cap, 0, &b)) != TRP_OK) return err;
     if ((err = trp_voucher_digest(s->chain_id, s->escrow, s->channel_id, cumulative, digest)) != TRP_OK) return err;
     if ((err = trp__sign_p256(signer, digest, voucher)) != TRP_OK) return err;
@@ -465,6 +502,7 @@ trp_err_t trp_session_top_up(trp_session *s, const trp_challenge *ch, const trp_
     trp_err_t err;
 
     if (!s || !ch || (err = check_options(opt)) != TRP_OK) return TRP_ERR_INVALID;
+    if (s->closed || !trp__is_zero(s->pending_top_up, TRP_U256_LEN)) return TRP_ERR_INVALID; /* one at a time */
     if (memcmp(opt->owner, s->descriptor.payer, TRP_ADDRESS_LEN) != 0) return TRP_ERR_INVALID;
     if ((err = match_challenge(ch, s, &r)) != TRP_OK) return err;
     for (i = 31; i >= 0; i--) {
@@ -473,7 +511,7 @@ trp_err_t trp_session_top_up(trp_session *s, const trp_challenge *ch, const trp_
         carry = v >> 8;
     }
     if (trp__is_zero(additional, TRP_U256_LEN) || carry || !fits_u96(total)) return TRP_ERR_INVALID;
-    if ((err = check_policy(opt->policy, &r, additional)) != TRP_OK) return err;
+    if ((err = decide(opt, ch, &r, total, additional)) != TRP_OK) return err;
     if ((err = carve(work, work_cap, TOP_UP_CALLDATA_LEN, &b)) != TRP_OK) return err;
 
     top_up_calldata(&s->descriptor, additional, b.calldata);
@@ -497,8 +535,27 @@ trp_err_t trp_session_top_up(trp_session *s, const trp_challenge *ch, const trp_
     trp__jw_decimal(&w, additional);
     trp_jw_object_end(&w);
     if ((err = finish(ch, s, &w, &b, out, out_cap)) != TRP_OK) return err;
-    memcpy(s->deposit, total, TRP_U256_LEN);
+    /* Counted once the server has accepted it: see trp_session_top_up_confirmed. */
+    memcpy(s->pending_top_up, additional, TRP_U256_LEN);
     return TRP_OK;
+}
+
+void trp_session_top_up_confirmed(trp_session *s)
+{
+    unsigned carry = 0;
+    int i;
+
+    for (i = 31; i >= 0; i--) {
+        unsigned v = (unsigned)s->deposit[i] + s->pending_top_up[i] + carry;
+        s->deposit[i] = (uint8_t)v;
+        carry = v >> 8;
+    }
+    memset(s->pending_top_up, 0, TRP_U256_LEN);
+}
+
+void trp_session_top_up_failed(trp_session *s)
+{
+    memset(s->pending_top_up, 0, TRP_U256_LEN);
 }
 
 trp_err_t trp_session_close(trp_session *s, const trp_challenge *ch, const trp_signer *signer, char *out,
@@ -510,7 +567,7 @@ trp_err_t trp_session_close(trp_session *s, const trp_challenge *ch, const trp_s
     uint8_t digest[32], voucher[TRP_P256_SIGNATURE_LEN], close_sig[TRP_P256_SIGNATURE_LEN];
     trp_err_t err;
 
-    if (!s || !ch || !signer || !signer->sign_digest) return TRP_ERR_INVALID;
+    if (!s || !ch || !signer || !signer->sign_digest || !is_channel_signer(s, signer)) return TRP_ERR_INVALID;
     if ((err = match_challenge(ch, s, &r)) != TRP_OK) return err;
     if ((err = carve(work, work_cap, 0, &b)) != TRP_OK) return err;
     if ((err = trp_voucher_digest(s->chain_id, s->escrow, s->channel_id, s->cumulative, digest)) != TRP_OK) return err;
@@ -534,5 +591,7 @@ trp_err_t trp_session_close(trp_session *s, const trp_challenge *ch, const trp_s
     trp_jw_key(&w, "closeSignature");
     trp__jw_hex(&w, close_sig, sizeof(close_sig));
     trp_jw_object_end(&w);
-    return finish(ch, s, &w, &b, out, out_cap);
+    if ((err = finish(ch, s, &w, &b, out, out_cap)) != TRP_OK) return err;
+    s->closed = 1; /* no more vouchers; closing again is allowed */
+    return TRP_OK;
 }

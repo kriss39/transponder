@@ -63,6 +63,8 @@ typedef struct {
     uint64_t chain_id;                       /* 4217 when absent, per the session spec */
     int fee_payer;
     uint64_t expires;                        /* 0 if none */
+    int has_min_voucher_delta;               /* the server's smallest voucher raise, if it says */
+    uint8_t min_voucher_delta[TRP_U256_LEN];
 } trp_session_request;
 
 /* TRP_ERR_UNSUPPORTED for v1 (contract-backed) challenges and for other methods or intents. */
@@ -74,15 +76,18 @@ typedef struct {
     uint8_t channel_id[32];
     uint8_t escrow[TRP_ADDRESS_LEN];
     uint64_t chain_id;
-    uint8_t deposit[TRP_U256_LEN];    /* total deposited */
-    uint8_t cumulative[TRP_U256_LEN]; /* highest voucher signed so far */
+    uint8_t deposit[TRP_U256_LEN];        /* total deposit the server has accepted */
+    uint8_t pending_top_up[TRP_U256_LEN]; /* signed, not yet confirmed; zero when none */
+    uint8_t cumulative[TRP_U256_LEN];     /* highest voucher signed so far */
+    int closed;                           /* a close was signed: no more vouchers */
 } trp_session;
 
 /*
  * Open a channel: deposit `deposit` (checked against options->policy, which
- * also limits token, recipient and chain), and write the `open` credential
- * with the initial voucher for one unit (the price). `salt` must be 32 fresh random bytes.
- * options->approve is not used here.
+ * also limits token, recipient and chain, and then options->approve), and
+ * write the `open` credential with the initial voucher for one unit (the
+ * price). `salt` must be 32 fresh random bytes. For sessions the policy's
+ * max_amount limits the channel's whole deposit, top-ups included.
  *
  * Buffers for every session call: `work` 8 KB (open and top-up use about
  * 6.5 KB, voucher and close 4.5 KB) and `out` 4 KB, measured with a
@@ -96,17 +101,36 @@ trp_err_t trp_session_open(const trp_challenge *challenge, const trp_charge_opti
 
 /*
  * Authorize `cumulative` in total (not an increment): it must not go down,
- * nor past the deposit. Writes a `voucher` credential for `challenge`.
+ * nor past the confirmed deposit, and a raise must be at least the server's
+ * minVoucherDelta. `signer` must be the channel's key, and the channel not
+ * closed. Writes a `voucher` credential for `challenge`. The same amount
+ * again is allowed (a retry); the server treats it as already accepted.
  */
 trp_err_t trp_session_voucher(trp_session *session, const trp_challenge *challenge,
                               const trp_signer *signer, const uint8_t cumulative[TRP_U256_LEN],
                               char *out, size_t out_cap, uint8_t *work, size_t work_cap);
 
-/* Add `additional` to the deposit (checked against the policy) with a `topUp` credential. */
+/*
+ * Add `additional` to the deposit with a `topUp` credential, after the
+ * policy (on the new total) and approve. The amount stays pending: call
+ * trp_session_top_up_confirmed once the server accepts it (a 2xx), and only
+ * then sign vouchers against it. Only one top-up may be pending.
+ */
 trp_err_t trp_session_top_up(trp_session *session, const trp_challenge *challenge,
                              const trp_charge_options *options,
                              const uint8_t additional[TRP_U256_LEN], char *out, size_t out_cap,
                              uint8_t *work, size_t work_cap);
+
+/* The server accepted the pending top-up: count it in the deposit. */
+void trp_session_top_up_confirmed(trp_session *session);
+
+/*
+ * The server refused the pending top-up: forget it. Only when it surely did
+ * not reach the chain (an error response). If the response was lost, the
+ * transaction may have been broadcast: resend the same credential, or read
+ * the channel's deposit, rather than signing a new top-up.
+ */
+void trp_session_top_up_failed(trp_session *session);
 
 /* Ask the server to settle the last voucher and close the channel. */
 trp_err_t trp_session_close(trp_session *session, const trp_challenge *challenge,

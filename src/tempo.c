@@ -59,7 +59,7 @@ void trp_mpp_attribution_memo(trp_str server_id, trp_str client_id, trp_str chal
     keccak_prefix(tag, 4, out);
     out[4] = 0x01;
     keccak_prefix(server_id, 10, out + 5);
-    if (client_id.ptr) keccak_prefix(client_id, 10, out + 15);
+    if (client_id.ptr && client_id.len) keccak_prefix(client_id, 10, out + 15); /* empty: anonymous, as mppx */
     keccak_prefix(challenge_id, 7, out + 25);
 }
 

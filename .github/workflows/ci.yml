@@ -22,6 +22,18 @@ jobs:
         if: matrix.cc == 'clang'
         run: make fuzz-replay CC=clang
 
+  ports:
+    # The software signer and the host demo, which need mbedTLS and libcurl.
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install mbedTLS
+        run: brew install mbedtls
+      - name: Software signer tests
+        run: make test-mbedtls
+      - name: Host demo and stack measurement
+        run: make pay stack
+
   conformance:
     # The official tempoxyz/mpp-tools runner, pinned in scripts/conformance.sh.
     runs-on: ubuntu-latest

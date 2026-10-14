@@ -257,7 +257,12 @@ static void test_errors(void)
     opt.valid_after = 0;
     opt.max_fee_per_gas = 0; /* the client pays fees but allows no fee */
     CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_INVALID);
+    /* A sponsor checks the fee caps too (mppx rejects 0), and the tip may not exceed the cap. */
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"feePayer\":true}}", NULL, &opt) == TRP_ERR_INVALID);
     opt.max_fee_per_gas = 1;
+    opt.max_priority_fee_per_gas = 2;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_INVALID);
+    opt.max_priority_fee_per_gas = 0;
 
     /* No chainId means Moderato, as the spec says. */
     w = "Payment id=\"t\", realm=\"r\", method=\"tempo\", intent=\"charge\", request=\"eyJhbW91bnQiOiIxIiwiY3VycmVuY3kiOiIweDIwYzAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAiLCJyZWNpcGllbnQiOiIweDc0MmQzNWNjNjYzNGMwNTMyOTI1YTNiODQ0YmM5ZTc1OTVmOGZlMDAifQ\"";

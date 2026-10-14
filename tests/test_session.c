@@ -66,6 +66,14 @@ static void setup(fixture *f)
     f->opt.max_fee_per_gas = SV_MAX_FEE;
 }
 
+static int is_zero(const uint8_t v[32])
+{
+    int i;
+    for (i = 0; i < 32; i++)
+        if (v[i]) return 0;
+    return 1;
+}
+
 static void u256(const char *dec, uint8_t out[32])
 {
     trp_u256_from_decimal(dec, strlen(dec), out);
@@ -109,11 +117,17 @@ static void test_flow(void)
     u256(SV_ADDITIONAL, amount);
     CHECK(trp_session_top_up(&s, &ch, &f.opt, amount, header, 4096, work, 6656) == TRP_OK);
     matches(header, SV_TOP_UP, "topUp");
+    /* Pending until the server accepts it. */
+    u256(SV_DEPOSIT, want);
+    CHECK(memcmp(s.deposit, want, 32) == 0);
+    trp_session_top_up_confirmed(&s);
     u256("1500000", want);
     CHECK(memcmp(s.deposit, want, 32) == 0);
+    CHECK(is_zero(s.pending_top_up));
 
     CHECK(trp_session_close(&s, &ch, &f.signer, header, 4096, work, 4608) == TRP_OK);
     matches(header, SV_CLOSE, "close");
+    CHECK(s.closed == 1);
     CHECK(f.key.unknown == 0);
 }
 
@@ -197,6 +211,111 @@ static void test_rules(void)
     CHECK(trp_voucher_digest(42431, TRP_CHANNEL_ESCROW, s.channel_id, over, digest) == TRP_OK);
 }
 
+static trp_err_t count_and_allow(void *ctx, const trp_challenge *ch, const trp_charge_request *req)
+{
+    (void)ch;
+    (void)req;
+    ++*(int *)ctx;
+    return TRP_OK;
+}
+
+static trp_err_t refuse(void *ctx, const trp_challenge *ch, const trp_charge_request *req)
+{
+    (void)ch;
+    (void)req;
+    ++*(int *)ctx;
+    return TRP_ERR_DENIED;
+}
+
+/* What the state machine refuses: unconfirmed deposit, a second pending top-up, a closed channel, another key. */
+static void test_state(void)
+{
+    fixture f;
+    trp_challenge ch;
+    trp_session s;
+    trp_signer other;
+    uint8_t deposit[32], salt[32], amount[32];
+    int asked = 0;
+
+    setup(&f);
+    u256(SV_DEPOSIT, deposit);
+    unhex(SV_SALT, salt, 32);
+    CHECK(trp_challenge_parse(SV_WIRE, strlen(SV_WIRE), &ch, scratch, sizeof(scratch)) == TRP_OK);
+
+    /* approve sees the open deposit and can refuse it. */
+    f.opt.approve = refuse;
+    f.opt.approve_ctx = &asked;
+    CHECK(trp_session_open(&ch, &f.opt, deposit, salt, &s, header, sizeof(header), work, sizeof(work)) ==
+          TRP_ERR_DENIED);
+    CHECK(asked == 1 && f.key.calls == 0);
+    f.opt.approve = count_and_allow;
+    CHECK(trp_session_open(&ch, &f.opt, deposit, salt, &s, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(asked == 2);
+
+    /* A pending top-up does not count yet, and a second one waits for it. */
+    u256(SV_ADDITIONAL, amount);
+    CHECK(trp_session_top_up(&s, &ch, &f.opt, amount, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(asked == 3);
+    u256("1000001", amount);
+    CHECK(trp_session_voucher(&s, &ch, &f.signer, amount, header, sizeof(header), work, sizeof(work)) ==
+          TRP_ERR_INVALID);
+    u256("1", amount);
+    CHECK(trp_session_top_up(&s, &ch, &f.opt, amount, header, sizeof(header), work, sizeof(work)) == TRP_ERR_INVALID);
+    trp_session_top_up_failed(&s);
+    u256(SV_DEPOSIT, amount);
+    CHECK(memcmp(s.deposit, amount, 32) == 0 && is_zero(s.pending_top_up));
+
+    /* The policy limits the channel's total: 1000000 + 1000001 is over 2000000. */
+    u256("1000001", amount);
+    CHECK(trp_session_top_up(&s, &ch, &f.opt, amount, header, sizeof(header), work, sizeof(work)) == TRP_ERR_DENIED);
+    u256("1000000", amount);
+    f.opt.approve = NULL;
+    /* Within the limit: the policy passes (the fake key then knows no ox digest for it). */
+    CHECK(trp_session_top_up(&s, &ch, &f.opt, amount, header, sizeof(header), work, sizeof(work)) == TRP_ERR_CRYPTO);
+    CHECK(is_zero(s.pending_top_up));
+
+    /* Only the channel's key signs its vouchers. */
+    other = f.signer;
+    other.public_key[0] ^= 1;
+    u256("250", amount);
+    CHECK(trp_session_voucher(&s, &ch, &other, amount, header, sizeof(header), work, sizeof(work)) ==
+          TRP_ERR_INVALID);
+    CHECK(trp_session_close(&s, &ch, &other, header, sizeof(header), work, sizeof(work)) == TRP_ERR_INVALID);
+
+    /* After close (see test_flow): no vouchers or top-ups. */
+    s.closed = 1;
+    CHECK(trp_session_voucher(&s, &ch, &f.signer, amount, header, sizeof(header), work, sizeof(work)) ==
+          TRP_ERR_INVALID);
+    CHECK(trp_session_top_up(&s, &ch, &f.opt, amount, header, sizeof(header), work, sizeof(work)) == TRP_ERR_INVALID);
+}
+
+/* minVoucherDelta: a raise below it is refused, the same amount again is fine. */
+static void test_min_delta(void)
+{
+    fixture f;
+    trp_challenge ch, ch2;
+    trp_session s;
+    trp_session_request r;
+    uint8_t deposit[32], salt[32], amount[32];
+
+    setup(&f);
+    u256(SV_DEPOSIT, deposit);
+    unhex(SV_SALT, salt, 32);
+    CHECK(trp_challenge_parse(SV_WIRE, strlen(SV_WIRE), &ch, scratch, sizeof(scratch)) == TRP_OK);
+    CHECK(trp_session_open(&ch, &f.opt, deposit, salt, &s, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(parse_with("{\"amount\":\"10\",\"currency\":\"0x20c0000000000000000000000000000000000000\","
+                     "\"recipient\":\"0x742d35cc6634c0532925a3b844bc9e7595f8fe00\",\"methodDetails\":{" ESCROW
+                     ",\"sessionProtocol\":\"v2\",\"chainId\":42431,\"minVoucherDelta\":\"500\"}}",
+                     &ch2) == TRP_OK);
+    CHECK(trp_session_request_parse(&ch2, &r) == TRP_OK && r.has_min_voucher_delta);
+    u256("509", amount); /* open voucher is 10: a raise of 499 */
+    CHECK(trp_session_voucher(&s, &ch2, &f.signer, amount, header, sizeof(header), work, sizeof(work)) ==
+          TRP_ERR_INVALID);
+    u256("10", amount); /* the same amount: no raise */
+    CHECK(trp_session_voucher(&s, &ch2, &f.signer, amount, header, sizeof(header), work, sizeof(work)) !=
+          TRP_ERR_INVALID);
+}
+
 /* The selectors hard-coded in session.c, recomputed. */
 static void test_selectors(void)
 {
@@ -214,5 +333,7 @@ void test_session(void)
 {
     test_flow();
     test_rules();
+    test_state();
+    test_min_delta();
     test_selectors();
 }

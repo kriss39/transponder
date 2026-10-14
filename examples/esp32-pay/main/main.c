@@ -74,6 +74,8 @@ static void wifi_start(void)
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL));
     strlcpy((char *)config.sta.ssid, CONFIG_TRP_WIFI_SSID, sizeof(config.sta.ssid));
     strlcpy((char *)config.sta.password, CONFIG_TRP_WIFI_PASSWORD, sizeof(config.sta.password));
+    /* With a password, refuse open and WEP networks posing as this one. */
+    if (CONFIG_TRP_WIFI_PASSWORD[0]) config.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &config));
     ESP_ERROR_CHECK(esp_wifi_start());
@@ -129,6 +131,8 @@ static esp_err_t on_http_event(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
+#define CREDENTIAL_CAP 4608 /* a charge with TRP_MAX_SPLITS splits */
+
 static int http_get(const char *url, const char *header, const char *value, exchange *ex)
 {
     esp_http_client_config_t config = {
@@ -137,6 +141,10 @@ static int http_get(const char *url, const char *header, const char *value, exch
         .user_data = ex,
         .timeout_ms = 30000,
         .crt_bundle_attach = esp_crt_bundle_attach,
+        /* Each request header must fit whole in the send buffer (512 bytes by default). */
+        .buffer_size_tx = CREDENTIAL_CAP + 512,
+        /* A redirect would carry the signed payment to another host. */
+        .disable_auto_redirect = true,
     };
     esp_http_client_handle_t client;
     int status = -1;
@@ -144,7 +152,10 @@ static int http_get(const char *url, const char *header, const char *value, exch
     memset(ex, 0, sizeof(*ex));
     client = esp_http_client_init(&config);
     if (!client) return -1;
-    if (header) esp_http_client_set_header(client, header, value);
+    if (header && esp_http_client_set_header(client, header, value) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        return -1;
+    }
     if (esp_http_client_perform(client) == ESP_OK) status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
     return status;
@@ -199,7 +210,7 @@ static void pay_once(void)
 {
     static exchange ex;
     static char wire[sizeof(ex.challenge)], scratch[2 * sizeof(ex.challenge) + 16];
-    static char credential[4608], receipt_scratch[2 * sizeof(ex.receipt) + 16];
+    static char credential[CREDENTIAL_CAP], receipt_scratch[2 * sizeof(ex.receipt) + 16];
     static uint8_t work[8192];
     static uint8_t owner[TRP_ADDRESS_LEN], fee_token[TRP_ADDRESS_LEN];
     static uint64_t chain_id = CONFIG_TRP_CHAIN_ID;

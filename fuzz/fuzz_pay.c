@@ -94,6 +94,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     memset(amount, 0, sizeof(amount));
     amount[31] = 1;
     check_out(trp_session_top_up(&s, &ch, &opt, amount, out, sizeof(out), work, sizeof(work)), out, sizeof(out));
+    trp_session_top_up_confirmed(&s);
     check_out(trp_session_close(&s, &ch, &signer, out, sizeof(out), work, sizeof(work)), out, sizeof(out));
     return 0;
 }

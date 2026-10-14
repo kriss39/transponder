@@ -113,36 +113,47 @@ static trp_err_t append(arena *a, const char *s, size_t n)
 }
 
 /*
- * NUL-terminate the bytes appended since `mark` and describe them. Header
- * values are byte strings: when they are not valid UTF-8, each byte is read
- * as Latin-1 and re-encoded, as JavaScript (and so mppx) reads them.
+ * Append one byte as it came off the wire. Header values are byte strings:
+ * when the value's raw bytes are not valid UTF-8 (`latin1`), each byte is
+ * read as Latin-1 and re-encoded, as JavaScript (and so mppx) reads them.
  */
+static trp_err_t append_raw(arena *a, char c, int latin1)
+{
+    uint8_t b = (uint8_t)c;
+    char two[2];
+
+    if (!latin1 || b < 0x80) return append(a, &c, 1);
+    two[0] = (char)(0xc0 | (b >> 6));
+    two[1] = (char)(0x80 | (b & 0x3f));
+    return append(a, two, 2);
+}
+
+/* NUL-terminate the bytes appended since `mark` and describe them. */
 static trp_err_t seal(arena *a, size_t mark, trp_str *out)
 {
-    uint8_t *s = (uint8_t *)a->buf + mark;
-    size_t len = a->len - mark, high = 0, i, j;
-
-    if (!trp_utf8_valid(s, len)) {
-        for (i = 0; i < len; i++) high += s[i] >= 0x80;
-        if (a->cap - a->len < high + 1) return TRP_ERR_BUFFER;
-        /* Widen in place from the back: byte i moves to i + (high bytes before it). */
-        j = len + high;
-        for (i = len; i-- > 0;) {
-            uint8_t b = s[i];
-            if (b < 0x80) {
-                s[--j] = b;
-            } else {
-                s[--j] = (uint8_t)(0x80 | (b & 0x3f));
-                s[--j] = (uint8_t)(0xc0 | (b >> 6));
-            }
-        }
-        a->len = mark + len + high;
-    }
     if (a->cap - a->len < 1) return TRP_ERR_BUFFER;
     a->buf[a->len++] = '\0';
     out->ptr = a->buf + mark;
     out->len = a->len - mark - 1;
     return TRP_OK;
+}
+
+/*
+ * Whether the raw bytes of the quoted-string starting at `i` (after its
+ * opening quote) are valid UTF-8. Escape syntax is ASCII, so the raw span
+ * can be checked as it is; what \uXXXX decodes to is never re-read.
+ */
+static int quoted_is_utf8(const char *v, size_t len, size_t i)
+{
+    size_t start = i;
+    int escaped = 0;
+
+    for (; i < len; i++) {
+        if (escaped) escaped = 0;
+        else if (v[i] == '\\') escaped = 1;
+        else if (v[i] == '"') break;
+    }
+    return trp_utf8_valid((const uint8_t *)v + start, i - start);
 }
 
 /*
@@ -153,6 +164,7 @@ static trp_err_t seal(arena *a, size_t mark, trp_str *out)
 static trp_err_t read_quoted(const char *v, size_t len, size_t *pos, arena *a, trp_str *out)
 {
     size_t i = *pos, mark = a->len;
+    int latin1 = !quoted_is_utf8(v, len, i);
     trp_err_t err;
 
     while (i < len) {
@@ -162,7 +174,7 @@ static trp_err_t read_quoted(const char *v, size_t len, size_t *pos, arena *a, t
             return seal(a, mark, out);
         }
         if (c != '\\') {
-            if ((err = append(a, &c, 1)) != TRP_OK) return err;
+            if ((err = append_raw(a, c, latin1)) != TRP_OK) return err;
             continue;
         }
         if (i >= len) break;
@@ -186,25 +198,30 @@ static trp_err_t read_quoted(const char *v, size_t len, size_t *pos, arena *a, t
                 continue;
             }
         }
-        if ((err = append(a, &c, 1)) != TRP_OK) return err;
+        if ((err = append_raw(a, c, latin1)) != TRP_OK) return err;
     }
     return TRP_ERR_INVALID; /* unterminated */
 }
 
+/* A token value: up to the next comma, without surrounding whitespace (tabs included). */
 static trp_err_t read_token(const char *v, size_t len, size_t *pos, arena *a, trp_str *out)
 {
-    size_t start = *pos, end, mark = a->len;
+    size_t start = *pos, end, mark = a->len, i;
+    int latin1;
     trp_err_t err;
 
     end = start;
     while (end < len && v[end] != ',') {
-        if (v[end] == '"' || (unsigned char)v[end] < 0x20) return TRP_ERR_INVALID; /* not a token */
+        unsigned char c = (unsigned char)v[end];
+        if (c == '"' || (c < 0x20 && c != '\t')) return TRP_ERR_INVALID; /* not a token */
         end++;
     }
     *pos = end;
     while (end > start && is_space(v[end - 1])) end--;
     while (start < end && is_space(v[start])) start++;
-    if ((err = append(a, v + start, end - start)) != TRP_OK) return err;
+    latin1 = !trp_utf8_valid((const uint8_t *)v + start, end - start);
+    for (i = start; i < end; i++)
+        if ((err = append_raw(a, v[i], latin1)) != TRP_OK) return err;
     return seal(a, mark, out);
 }
 
@@ -281,6 +298,12 @@ static trp_err_t parse_at(const char *v, size_t len, size_t start, trp_challenge
         if (field) *field = value;
         else a->len = mark; /* unknown parameter: drop its value */
     }
+
+    /* Empty optional parameters count as absent, as in mppx's Challenge.from. */
+    if (out->description.len == 0) out->description.ptr = NULL;
+    if (out->digest.len == 0) out->digest.ptr = NULL;
+    if (out->expires.len == 0) out->expires.ptr = NULL;
+    if (out->opaque.len == 0) out->opaque.ptr = NULL;
 
     if (!out->id.ptr || out->id.len == 0 || !out->realm.ptr || !out->method.ptr ||
         !out->intent.ptr || !out->request.ptr)

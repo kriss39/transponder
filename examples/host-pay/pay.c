@@ -31,6 +31,8 @@
  *                     server's suggestedDeposit, else N times the price)
  */
 
+#define _DEFAULT_SOURCE /* arc4random on glibc */
+
 #include <curl/curl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -282,9 +284,12 @@ static int run_session(const char *url, int n, const trp_charge_options *opt, ex
             status = send_credential(url, &ch, credential, ex);
             printf("top up +%llu -> %ld\n", (unsigned long long)initial, status);
             if (status != 200 && status != 204) {
+                /* Refused: forget it. No answer at all: it may be on chain, so stop rather than sign again. */
+                if (status >= 400) trp_session_top_up_failed(&s);
                 printf("%s\n", ex->body);
                 return 1;
             }
+            trp_session_top_up_confirmed(&s);
             deposited += initial;
         }
         u256_from_u64(total, amount);

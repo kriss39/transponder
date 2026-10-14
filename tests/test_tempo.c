@@ -129,6 +129,17 @@ static void test_signature_rules(void)
     CHECK(trp_p256_signature(r, N, pub, 0, low_sig) == TRP_ERR_INVALID);
 }
 
+/* An empty client ID is anonymous, as in mppx (`if (clientId)`): zeros, not keccak256(""). */
+static void test_empty_client_id(void)
+{
+    uint8_t memo[32];
+
+    trp_mpp_attribution_memo(s_of("api.example.com"), s_of(""), s_of("ch_1"), memo);
+    CHECK_HEX(memo, 32, "ef1ed712011ece072f76bd8b82350e0000000000000000000064b3d62af61e58");
+    trp_mpp_attribution_memo(s_of("api.example.com"), s_of(NULL), s_of("ch_1"), memo);
+    CHECK_HEX(memo, 32, "ef1ed712011ece072f76bd8b82350e0000000000000000000064b3d62af61e58");
+}
+
 static void test_helpers(void)
 {
     uint8_t out[32], h[32];
@@ -161,6 +172,7 @@ static void test_helpers(void)
 
 void test_tempo(void)
 {
+    test_empty_client_id();
     test_vectors();
     test_signature_rules();
     test_helpers();

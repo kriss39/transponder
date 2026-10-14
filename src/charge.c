@@ -279,7 +279,8 @@ trp_err_t trp_tempo_charge(const trp_challenge *ch, const trp_charge_options *op
         }
         return TRP_OK;
     }
-    if (!req.fee_payer && opt->max_fee_per_gas == 0) return TRP_ERR_INVALID;
+    /* Sponsored or not, the transaction declares its fees (mppx's sponsor rejects 0). */
+    if (opt->max_fee_per_gas == 0 || opt->max_priority_fee_per_gas > opt->max_fee_per_gas) return TRP_ERR_INVALID;
     if (opt->valid_after >= valid_before) return TRP_ERR_INVALID;
     if (!req.has_memo) trp_mpp_attribution_memo(ch->realm, opt->client_id, ch->id, req.memo);
 

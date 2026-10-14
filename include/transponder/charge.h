@@ -80,12 +80,21 @@ typedef struct {
     const uint8_t *owner;            /* the account the access key pays for, TRP_ADDRESS_LEN bytes */
     const trp_signer *signer;        /* the access key */
     const trp_spend_policy *policy;  /* required */
-    /* Optional last say before signing, e.g. a button on the device. Return TRP_OK to pay. */
+    /*
+     * Optional last say before signing, e.g. a button on the device. Return
+     * TRP_OK to pay. Sessions call it too, for the open deposit and each
+     * top-up, with `request->amount` set to that amount.
+     */
     trp_err_t (*approve)(void *ctx, const trp_challenge *challenge, const trp_charge_request *request);
     void *approve_ctx;
     uint64_t now;                    /* unix seconds; must be right to within a few seconds */
     uint64_t valid_after;            /* a random past timestamp, or 0 for none (see DESIGN.md) */
     uint64_t gas_limit;
+    /*
+     * Fee caps, required even when the server sponsors the fee (its sponsor
+     * checks them; mppx's default allows up to 100 gwei and gas x fee up to
+     * 5e16). The priority fee may not exceed max_fee_per_gas.
+     */
     uint64_t max_fee_per_gas;
     uint64_t max_priority_fee_per_gas;
     const uint8_t *fee_token;        /* when the client pays fees; NULL lets the chain choose */

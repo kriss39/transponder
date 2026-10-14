@@ -2,6 +2,7 @@
 
 #include "transponder/base64url.h"
 #include "transponder/challenge.h"
+#include "transponder/charge.h"
 #include "transponder/credential.h"
 #include "transponder/receipt.h"
 #include "conformance_vectors.h"
@@ -128,6 +129,37 @@ static void test_extra_cases(void)
                          "request=\"e30\", description=\"caf\xe9\"";
         CHECK(trp_challenge_parse(l1, strlen(l1), &ch, scratch, sizeof(scratch)) == TRP_OK);
         CHECK(str_matches(ch.description, "caf\xc3\xa9"));
+    }
+
+    /*
+     * mppx writes U+0080..U+00FF as raw bytes and escapes the rest, so one
+     * value can mix both: only the raw byte is widened, the escape's UTF-8
+     * stays as it is ("Caf\xe9 — X" from mppx 0.13.4's Challenge.serialize).
+     */
+    {
+        const char *mixed = "Payment id=\"m\", realm=\"Caf\xe9 \\u2014 X\", method=\"tempo\", "
+                            "intent=\"charge\", request=\"e30\"";
+        CHECK(trp_challenge_parse(mixed, strlen(mixed), &ch, scratch, sizeof(scratch)) == TRP_OK);
+        CHECK(str_matches(ch.realm, "Caf\xc3\xa9 \xe2\x80\x94 X"));
+    }
+
+    /* Like mppx: a token value is trimmed of tabs, and empty optional parameters are absent. */
+    {
+        const char *tab = "Payment id=abc\t, realm=r, method=tempo, intent=charge, request=e30";
+        const char *empty = "Payment id=\"e\", realm=\"r\", method=\"tempo\", intent=\"charge\", "
+                            "request=\"e30\", expires=\"\", digest=\"\", description=\"\", opaque=\"\"";
+        const char *lower = "Payment id=\"e\", realm=\"r\", method=\"tempo\", intent=\"charge\", "
+                            "request=\"e30\", expires=\"2030-01-01t00:00:00z\"";
+        uint64_t t;
+        CHECK(trp_challenge_parse(tab, strlen(tab), &ch, scratch, sizeof(scratch)) == TRP_OK);
+        CHECK(str_matches(ch.id, "abc"));
+        CHECK(trp_challenge_parse(empty, strlen(empty), &ch, scratch, sizeof(scratch)) == TRP_OK);
+        CHECK(!ch.expires.ptr && !ch.digest.ptr && !ch.description.ptr && !ch.opaque.ptr);
+        /* RFC 3339 as mppx's z.datetime reads it: an uppercase T and Z only. */
+        CHECK(trp_challenge_parse(lower, strlen(lower), &ch, scratch, sizeof(scratch)) == TRP_OK);
+        CHECK(trp_parse_rfc3339(ch.expires.ptr, ch.expires.len, &t) == TRP_ERR_INVALID);
+        CHECK(trp_parse_rfc3339("2030-01-01 00:00:00Z", 20, &t) == TRP_ERR_INVALID);
+        CHECK(trp_parse_rfc3339("2030-01-01T00:00:00Z", 20, &t) == TRP_OK && t == 1893456000u);
     }
 
     /* Too little scratch is reported, not overrun. */
