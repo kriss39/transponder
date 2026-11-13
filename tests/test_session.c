@@ -211,6 +211,61 @@ static void test_rules(void)
     CHECK(trp_voucher_digest(42431, TRP_CHANNEL_ESCROW, s.channel_id, over, digest) == TRP_OK);
 }
 
+/* Signs anything with a fixed in-range (r, s): for tests that check decisions, not bytes. */
+static trp_err_t any_sign(void *ctx, const uint8_t digest[32], uint8_t r[32], uint8_t s[32])
+{
+    (void)digest;
+    ++*(int *)ctx;
+    memset(r, 0, 32);
+    memset(s, 0, 32);
+    r[31] = 1;
+    s[31] = 1;
+    return TRP_OK;
+}
+
+/* Which chain a session pays on when its challenge names none. */
+static void test_chain_default(void)
+{
+    fixture f;
+    trp_challenge ch;
+    trp_session s;
+    uint8_t deposit[32], salt[32] = {7}, amount[32];
+    uint64_t moderato = TRP_TEMPO_MODERATO, both[2] = {TRP_TEMPO_MODERATO, TRP_TEMPO_MAINNET};
+    int signed_count = 0;
+
+    setup(&f);
+    f.signer.sign_digest = any_sign;
+    f.signer.ctx = &signed_count;
+    u256("1000", deposit);
+    CHECK(parse_with(SESSION_REQ(ESCROW ",\"sessionProtocol\":\"v2\""), &ch) == TRP_OK);
+
+    /* No chain in the challenge and none in the policy: refused before anything is signed. */
+    CHECK(trp_session_open(&ch, &f.opt, deposit, salt, &s, header, sizeof(header), work, sizeof(work)) ==
+          TRP_ERR_DENIED);
+    CHECK(signed_count == 0);
+
+    /* One chain in the policy: the channel opens there, not on the spec's mainnet default. */
+    f.policy.chain_ids = &moderato;
+    f.policy.chain_id_count = 1;
+    CHECK(trp_session_open(&ch, &f.opt, deposit, salt, &s, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(s.chain_id == TRP_TEMPO_MODERATO);
+
+    /* Later challenges that name no chain are for the channel's own chain; one naming another is not. */
+    u256("20", amount);
+    CHECK(trp_session_voucher(&s, &ch, &f.signer, amount, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(parse_with(SESSION_REQ(ESCROW ",\"sessionProtocol\":\"v2\",\"chainId\":4217"), &ch) == TRP_OK);
+    u256("30", amount);
+    CHECK(trp_session_voucher(&s, &ch, &f.signer, amount, header, sizeof(header), work, sizeof(work)) ==
+          TRP_ERR_INVALID);
+
+    /* Several chains: the session spec's default, mainnet, which is listed. */
+    CHECK(parse_with(SESSION_REQ(ESCROW ",\"sessionProtocol\":\"v2\""), &ch) == TRP_OK);
+    f.policy.chain_ids = both;
+    f.policy.chain_id_count = 2;
+    CHECK(trp_session_open(&ch, &f.opt, deposit, salt, &s, header, sizeof(header), work, sizeof(work)) == TRP_OK);
+    CHECK(s.chain_id == TRP_TEMPO_MAINNET);
+}
+
 static trp_err_t count_and_allow(void *ctx, const trp_challenge *ch, const trp_charge_request *req)
 {
     (void)ch;
@@ -471,6 +526,16 @@ static void test_restart(void)
     CHECK(trp_session_sync(&back, body, strlen(body), SV_NOW) == TRP_ERR_INVALID); /* settled over 96 bits */
     trp_session_save(&back, again);
     CHECK(memcmp(state, again, sizeof(state)) == 0);
+
+    /* A valid_before near the top of uint64 is never loaded, and sync's window does not wrap. */
+    back = s;
+    back.tx_valid_before = UINT64_MAX;
+    trp_session_save(&back, again);
+    CHECK(trp_session_load(&back, again, sizeof(again)) == TRP_ERR_INVALID);
+    back = s;
+    back.tx_valid_before = UINT64_MAX - 10; /* set in memory: the open could still land */
+    r = state_response(0, 0, 0);
+    CHECK(trp_session_sync(&back, r, strlen(r), SV_NOW) == TRP_ERR_PENDING && back.closed == 0);
 }
 
 void test_session(void)
@@ -481,4 +546,5 @@ void test_session(void)
     test_state();
     test_min_delta();
     test_selectors();
+    test_chain_default();
 }

@@ -46,6 +46,13 @@ trp_err_t trp__json_u256(const trp_json *obj, const char *key, uint8_t out[32]);
 /* now + TRP_CHARGE_MAX_VALIDITY, capped by the challenge's `expires`; INVALID if it already expired. */
 trp_err_t trp__valid_before(const trp_challenge *ch, uint64_t now, uint64_t *out);
 
+/*
+ * The chain to pay on when the challenge names none: the policy's only
+ * chain, or the spec default `*chain_id` already holds when it lists
+ * several. DENIED when the policy lists none.
+ */
+trp_err_t trp__resolve_chain(const trp_spend_policy *policy, int has_chain_id, uint64_t *chain_id);
+
 /* did:pkh:eip155:<chain>:<EIP-55 owner>; returns the length. */
 size_t trp__did_pkh(uint64_t chain_id, const uint8_t owner[TRP_ADDRESS_LEN], char out[TRP__DID_MAX]);
 

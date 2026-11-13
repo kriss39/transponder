@@ -197,6 +197,7 @@ trp_err_t trp_session_request_parse(const trp_challenge *ch, trp_session_request
     err = trp_json_get(&details, "chainId", &v);
     if (err == TRP_OK) {
         if (trp_json_get_uint64(&v, &r->chain_id) != TRP_OK || r->chain_id == 0) return TRP_ERR_INVALID;
+        r->has_chain_id = 1;
     } else if (err != TRP_ERR_NOT_FOUND) {
         return err;
     }
@@ -310,7 +311,8 @@ static trp_err_t finish(const trp_challenge *ch, const trp_session *s, trp_json_
 static trp_err_t check_options(const trp_charge_options *opt)
 {
     if (!opt || !opt->owner || !opt->signer || !opt->signer->sign_digest || !opt->policy ||
-        opt->now == 0 || opt->now > UINT64_MAX - TRP_CHARGE_MAX_VALIDITY || opt->gas_limit == 0)
+        opt->now == 0 || opt->now > UINT64_MAX - TRP_CHARGE_MAX_VALIDITY || opt->gas_limit == 0 ||
+        trp__is_zero(opt->policy->max_amount, TRP_U256_LEN))
         return TRP_ERR_INVALID;
     return TRP_OK;
 }
@@ -354,6 +356,7 @@ static trp_err_t match_challenge(const trp_challenge *ch, const trp_session *s, 
     trp_err_t err = trp_session_request_parse(ch, r);
 
     if (err != TRP_OK) return err;
+    if (!r->has_chain_id) r->chain_id = s->chain_id; /* the channel's own chain */
     if (r->chain_id != s->chain_id || memcmp(r->escrow, s->escrow, TRP_ADDRESS_LEN) != 0 ||
         memcmp(r->currency, s->descriptor.token, TRP_ADDRESS_LEN) != 0 ||
         memcmp(r->recipient, s->descriptor.payee, TRP_ADDRESS_LEN) != 0)
@@ -379,6 +382,7 @@ trp_err_t trp_session_open(const trp_challenge *ch, const trp_charge_options *op
 
     if (!ch || !s || (err = check_options(opt)) != TRP_OK) return TRP_ERR_INVALID;
     if ((err = trp_session_request_parse(ch, &r)) != TRP_OK) return err;
+    if ((err = trp__resolve_chain(opt->policy, r.has_chain_id, &r.chain_id)) != TRP_OK) return err;
     /* Only the precompile escrow: a server cannot route the deposit elsewhere. */
     if (memcmp(r.escrow, TRP_CHANNEL_ESCROW, TRP_ADDRESS_LEN) != 0) return TRP_ERR_UNSUPPORTED;
     if (trp__is_zero(deposit, TRP_U256_LEN) || !fits_u96(deposit) || memcmp(deposit, r.price, 32) < 0)
@@ -687,6 +691,7 @@ trp_err_t trp_session_load(trp_session *s, const uint8_t *in, size_t len)
     if (*p > 1) return TRP_ERR_INVALID;
     next.closed = *p++;
     get_u64(p, &next.tx_valid_before);
+    if (next.tx_valid_before > UINT64_MAX - TRP_SESSION_SYNC_MARGIN) return TRP_ERR_INVALID;
 
     /* Only what open could have produced. */
     trp_channel_id(d, next.escrow, next.chain_id, id);
@@ -766,7 +771,8 @@ trp_err_t trp_session_sync(trp_session *s, const char *response, size_t len, uin
         return TRP_ERR_INVALID;
 
     /* Could the last open or top-up still land? Then the chain is not the last word yet. */
-    in_flight = s->tx_valid_before != 0 && now <= s->tx_valid_before + TRP_SESSION_SYNC_MARGIN;
+    in_flight = s->tx_valid_before != 0 &&
+                (now <= s->tx_valid_before || now - s->tx_valid_before <= TRP_SESSION_SYNC_MARGIN);
     add_u256(s->deposit, s->pending_top_up, expected, &carry);
 
     if (trp__is_zero(deposit, 32)) {

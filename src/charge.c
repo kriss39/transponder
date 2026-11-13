@@ -71,6 +71,7 @@ static trp_err_t read_details(const trp_json *details, trp_charge_request *r)
     err = trp_json_get(details, "chainId", &v);
     if (err == TRP_OK) {
         if (trp_json_get_uint64(&v, &r->chain_id) != TRP_OK || r->chain_id == 0) return TRP_ERR_INVALID;
+        r->has_chain_id = 1;
     } else if (err != TRP_ERR_NOT_FOUND) {
         return err;
     }
@@ -263,7 +264,9 @@ trp_err_t trp_tempo_charge(const trp_challenge *ch, const trp_charge_options *op
     if (!ch || !opt || !opt->owner || !opt->signer || !opt->signer->sign_digest || !opt->policy ||
         opt->now == 0 || opt->now > UINT64_MAX - TRP_CHARGE_MAX_VALIDITY || opt->gas_limit == 0)
         return TRP_ERR_INVALID;
+    if (trp__is_zero(opt->policy->max_amount, TRP_U256_LEN)) return TRP_ERR_INVALID; /* no limit set */
     if ((err = trp_charge_request_parse(ch, &req)) != TRP_OK) return err;
+    if ((err = trp__resolve_chain(opt->policy, req.has_chain_id, &req.chain_id)) != TRP_OK) return err;
 
     /* The server wrote the challenge: decide before anything is signed. */
     if ((err = trp_spend_policy_check(opt->policy, &req)) != TRP_OK) return err;

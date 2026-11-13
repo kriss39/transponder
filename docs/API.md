@@ -74,7 +74,7 @@ if (trp_challenge_select(www_authenticate, len, "tempo", "charge", &ch, scratch,
 static const uint64_t chains[] = {TRP_TEMPO_MODERATO};
 trp_spend_policy policy = {0};
 trp_u256_from_decimal("100000", 6, policy.max_amount); /* 0.10 of a 6-decimal token, per payment */
-policy.chain_ids = chains;
+policy.chain_ids = chains;           /* also the chain to pay on when a challenge names none */
 policy.chain_id_count = 1;
 
 /* 3. Who pays, and the transaction's limits. */

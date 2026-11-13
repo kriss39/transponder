@@ -61,6 +61,7 @@ typedef struct {
     uint8_t escrow[TRP_ADDRESS_LEN];
     uint8_t operator_[TRP_ADDRESS_LEN];      /* zero when the server names none */
     uint64_t chain_id;                       /* 4217 when absent, per the session spec */
+    int has_chain_id;                        /* the challenge names its chain */
     int fee_payer;
     uint64_t expires;                        /* 0 if none */
     int has_min_voucher_delta;               /* the server's smallest voucher raise, if it says */

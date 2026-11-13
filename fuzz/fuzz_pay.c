@@ -3,9 +3,11 @@
  * `request` JSON, and everything the device would do with it runs, from
  * request parsing to the signed credential. A charge goes through
  * trp_tempo_charge; a session through open, voucher, top-up and close. The
- * signer is fake and the policy allows anything, so the fuzzer reaches the
- * encoders. The first byte picks charge or session and whether the challenge
- * has an expiry.
+ * signer is fake and the policy allows any amount, token and recipient, so
+ * the fuzzer reaches the encoders. The first byte picks charge or session,
+ * whether the challenge has an expiry, the signer's pre-hash flag, and
+ * whether the policy lists no chain (any named chain; an unnamed one is
+ * refused) or one (an unnamed chain resolves to it).
  *
  *   make fuzz && ./build/fuzz_pay fuzz/corpus/pay -dict=fuzz/mpp.dict
  */
@@ -67,6 +69,11 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     signer.pre_hash = data[0] & 4 ? 1 : 0;
     memset(&policy, 0, sizeof(policy));
     memset(policy.max_amount, 0xff, sizeof(policy.max_amount));
+    if (data[0] & 8) {
+        static const uint64_t one_chain = 42431;
+        policy.chain_ids = &one_chain;
+        policy.chain_id_count = 1;
+    }
     memset(&opt, 0, sizeof(opt));
     opt.owner = owner;
     opt.signer = &signer;

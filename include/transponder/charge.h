@@ -41,7 +41,8 @@ typedef struct {
     uint8_t amount[TRP_U256_LEN];      /* total, in base units; includes the splits */
     uint8_t currency[TRP_ADDRESS_LEN]; /* TIP-20 token */
     uint8_t recipient[TRP_ADDRESS_LEN];
-    uint64_t chain_id;
+    uint64_t chain_id;                 /* Moderato when absent (the spec's default); see has_chain_id */
+    int has_chain_id;                  /* the challenge names its chain */
     int fee_payer;                     /* the server sponsors the network fee */
     int has_memo;
     uint8_t memo[TRP_MEMO_LEN];        /* a server-required memo, if has_memo */
@@ -62,6 +63,12 @@ trp_err_t trp_charge_request_parse(const trp_challenge *challenge, trp_charge_re
  * What the device agrees to pay. The server writes the challenge, so the
  * device checks it against limits of its own before it signs anything.
  * List fields are allow-lists; a count of 0 allows any value.
+ *
+ * The chain list also picks the chain when a challenge names none, as
+ * mppx's allowedChainIds does: with one chain, that chain; with several,
+ * the spec's default, which must be listed. With none, a challenge that
+ * names no chain is refused (TRP_ERR_DENIED) rather than letting the
+ * server's omission choose where the device pays.
  */
 typedef struct {
     uint8_t max_amount[TRP_U256_LEN];                /* per payment, base units; must be non-zero */

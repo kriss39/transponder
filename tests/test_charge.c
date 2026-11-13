@@ -46,8 +46,10 @@ static char scratch[4096];
 static uint8_t work[8192];
 static char header[8192];
 
-/* Allows anything up to 10^12 base units on any token, recipient and chain. */
+/* Allows anything up to 10^12 base units on any token and recipient, on Moderato or mainnet. */
 static trp_spend_policy open_policy;
+static const uint64_t open_chains[2] = {TRP_TEMPO_MODERATO, TRP_TEMPO_MAINNET};
+static trp_charge_result last_result;
 
 static void setup(trp_signer *signer, fake_key *key, uint8_t owner[20], uint8_t token[20],
                   trp_charge_options *opt)
@@ -57,6 +59,8 @@ static void setup(trp_signer *signer, fake_key *key, uint8_t owner[20], uint8_t 
     memset(signer, 0, sizeof(*signer));
     memset(&open_policy, 0, sizeof(open_policy));
     trp_u256_from_decimal("1000000000000", 13, open_policy.max_amount);
+    open_policy.chain_ids = open_chains;
+    open_policy.chain_id_count = 2;
     signer->sign_digest = fake_sign;
     signer->ctx = key;
     unhex(TV_PUBLIC_KEY, signer->public_key, sizeof(signer->public_key));
@@ -122,7 +126,8 @@ static trp_err_t charge_with(const char *request_json, const char *expires, trp_
              "Payment id=\"t\", realm=\"r\", method=\"tempo\", intent=\"charge\", request=\"%s\"%s%s%s",
              req, expires ? ", expires=\"" : "", expires ? expires : "", expires ? "\"" : "");
     if ((err = trp_challenge_parse(wire, strlen(wire), &ch, scratch, sizeof(scratch))) != TRP_OK) return err;
-    return trp_tempo_charge(&ch, opt, header, sizeof(header), work, sizeof(work), NULL);
+    memset(&last_result, 0, sizeof(last_result));
+    return trp_tempo_charge(&ch, opt, header, sizeof(header), work, sizeof(work), &last_result);
 }
 
 #define TOKEN "0x20c0000000000000000000000000000000000000"
@@ -171,11 +176,35 @@ static void test_policy(void)
     policy.recipient_count = 1;
     CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
     policy = open_policy;
-    policy.chain_ids = &mainnet; /* the request names no chain: Moderato */
-    policy.chain_id_count = 1;
-    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
+    policy.chain_id_count = 1; /* Moderato only */
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"chainId\":4217}}", NULL, &opt) == TRP_ERR_DENIED);
+    CHECK(key.calls == 1);
+
+    /* A challenge without a chain pays on the policy's only chain, as mppx's allowedChainIds does. */
+    policy.chain_ids = &mainnet;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_OK);
+    CHECK(last_result.request.chain_id == TRP_TEMPO_MAINNET && !last_result.request.has_chain_id);
     CHECK(charge_with(BASE ",\"methodDetails\":{\"chainId\":4217}}", NULL, &opt) == TRP_OK);
-    CHECK(key.calls == 2);
+    CHECK(last_result.request.chain_id == TRP_TEMPO_MAINNET && last_result.request.has_chain_id);
+    CHECK(key.calls == 3);
+
+    /* With several chains it is the spec's default (Moderato), which must be listed. */
+    {
+        uint64_t both[2] = {TRP_TEMPO_MAINNET, TRP_TEMPO_MODERATO};
+        policy.chain_ids = both;
+        policy.chain_id_count = 2;
+        CHECK(charge_with(BASE "}", NULL, &opt) == TRP_OK && last_result.request.chain_id == TRP_TEMPO_MODERATO);
+        both[1] = TRP_TEMPO_MAINNET;
+        policy.chain_id_count = 2; /* two entries, neither Moderato */
+        CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
+    }
+
+    /* With no chain listed, the server's omission does not get to choose: refused unsigned. */
+    policy.chain_ids = NULL;
+    policy.chain_id_count = 0;
+    CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
+    CHECK(charge_with(BASE ",\"methodDetails\":{\"chainId\":42431}}", NULL, &opt) == TRP_OK); /* named: any */
+    CHECK(key.calls == 5);
 
     /* A split to a recipient outside the list is refused too. */
     policy = open_policy;
@@ -185,14 +214,14 @@ static void test_policy(void)
     CHECK(charge_with(BASE ",\"methodDetails\":{\"splits\":[{\"amount\":\"1\",\"recipient\":"
                            "\"0x1111111111111111111111111111111111111111\"}]}}",
                       NULL, &opt) == TRP_ERR_DENIED);
-    CHECK(key.calls == 2);
+    CHECK(key.calls == 5);
 
     /* The approve callback has the last word. */
     opt.policy = &open_policy;
     opt.approve = deny_all;
     opt.approve_ctx = &asked;
     CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_DENIED);
-    CHECK(asked == 1 && key.calls == 2);
+    CHECK(asked == 1 && key.calls == 5);
     opt.approve = NULL;
 
     /* No policy, or a zero limit, is a configuration error. */
@@ -201,7 +230,7 @@ static void test_policy(void)
     memset(&policy, 0, sizeof(policy));
     opt.policy = &policy;
     CHECK(charge_with(BASE "}", NULL, &opt) == TRP_ERR_INVALID);
-    CHECK(key.calls == 2);
+    CHECK(key.calls == 5);
 }
 
 static void test_errors(void)
@@ -271,6 +300,7 @@ static void test_errors(void)
 
     /* The largest chain ID fits in the credential's source (once a 64-byte stack overflow). */
     key.stamp = 1;
+    open_policy.chain_id_count = 0; /* any chain the challenge names */
     CHECK(charge_with(BASE ",\"methodDetails\":{\"chainId\":18446744073709551615}}", NULL, &opt) == TRP_OK);
     CHECK(trp_base64url_decode(header + 8, strlen(header + 8), decoded, sizeof(decoded), &n) == TRP_OK);
     CHECK(trp_json_parse((const char *)decoded, n, &root) == TRP_OK && trp_json_get(&root, "source", &v) == TRP_OK);

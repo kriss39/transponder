@@ -166,6 +166,14 @@ trp_err_t trp__valid_before(const trp_challenge *ch, uint64_t now, uint64_t *out
     return TRP_OK;
 }
 
+trp_err_t trp__resolve_chain(const trp_spend_policy *policy, int has_chain_id, uint64_t *chain_id)
+{
+    if (has_chain_id) return TRP_OK;
+    if (policy->chain_id_count == 0) return TRP_ERR_DENIED;
+    if (policy->chain_id_count == 1) *chain_id = policy->chain_ids[0];
+    return TRP_OK; /* several: the spec default, which the policy check requires to be listed */
+}
+
 /* ---- addresses and signing ---------------------------------------------- */
 
 void trp_address_checksum(const uint8_t address[TRP_ADDRESS_LEN], char out[43])
