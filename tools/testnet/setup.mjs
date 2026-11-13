@@ -50,6 +50,7 @@ const state = existsSync(statePath)
       merchantPrivateKey: generatePrivateKey(),
       devicePrivateKey: P256.randomPrivateKey(),
     }
+state.devicePrivateKey ??= P256.randomPrivateKey() // a fresh key once the old one expired
 state.sessionPrivateKey ??= P256.randomPrivateKey()
 writeFileSync(statePath, JSON.stringify(state, null, 2), { mode: 0o600 })
 
